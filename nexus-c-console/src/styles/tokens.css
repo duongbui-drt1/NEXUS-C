@@ -1,0 +1,68 @@
+:root {
+  /* NEXUS Enterprise Palette — Light Mode (Default) */
+  --color-navy: #17243A;
+  --color-blue: #3478D4;
+  --color-blue-hover: #2864B8;
+  --color-slate: #64748B;
+
+  --color-bg: #F5F7FA;
+  --color-surface: #FFFFFF;
+  --color-surface-subtle: #F8FAFC;
+  --color-border: #E3E8EF;
+  --color-border-strong: #CBD5E1;
+
+  --color-text: #1E293B;
+  --color-text-secondary: #475569;
+  --color-text-muted: #718096;
+
+  /* Semantic */
+  --color-success: #16866B;
+  --color-success-bg: #ECFDF5;
+  --color-warning: #C58A2B;
+  --color-warning-bg: #FFFBEB;
+  --color-danger: #C94B4B;
+  --color-danger-bg: #FEF2F2;
+  --color-info: #3478D4;
+  --color-info-bg: #EFF6FF;
+
+  /* Sidebar */
+  --sidebar-bg: #17243A;
+  --sidebar-text: #CBD5E1;
+  --sidebar-text-active: #FFFFFF;
+  --sidebar-hover: rgba(255, 255, 255, 0.08);
+  --sidebar-active: rgba(52, 120, 212, 0.25);
+  --sidebar-border: rgba(255, 255, 255, 0.09);
+
+  /* Typography */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Layout */
+  --sidebar-width: 244px;
+  --sidebar-collapsed-width: 64px;
+  --header-height: 56px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-md: 0 6px 18px rgba(15, 23, 42, 0.12);
+}
+
+[data-theme='dark'] {
+  --color-bg: #0F172A;
+  --color-surface: #1E293B;
+  --color-surface-subtle: #162033;
+  --color-border: #334155;
+  --color-border-strong: #475569;
+
+  --color-text: #F1F5F9;
+  --color-text-secondary: #CBD5E1;
+  --color-text-muted: #94A3B8;
+
+  --color-success-bg: rgba(22, 134, 107, 0.16);
+  --color-warning-bg: rgba(197, 138, 43, 0.16);
+  --color-danger-bg: rgba(201, 75, 75, 0.16);
+  --color-info-bg: rgba(52, 120, 212, 0.18);
+
+  --sidebar-bg: #0B1220;
+}
