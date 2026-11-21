@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Nexus.Modules.Tenancy</AssemblyName>
+    <RootNamespace>Nexus.Modules.Tenancy</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\Nexus.SharedKernel\Nexus.SharedKernel.csproj" />
+    <ProjectReference Include="..\..\Nexus.BuildingBlocks\Nexus.BuildingBlocks.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,27 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.log
+TestResults/
+coverage/
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+appsettings.Development.local.json
+appsettings.Production.json
+
+# Storage & Temp
+storage-data/
+.storage/
+
+# IDE & OS
+.vs/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

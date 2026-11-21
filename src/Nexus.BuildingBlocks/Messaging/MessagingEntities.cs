@@ -1,0 +1,230 @@
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Nexus.BuildingBlocks.Persistence;
+using Nexus.SharedKernel.Context;
+using Nexus.SharedKernel.Events;
+using Nexus.SharedKernel.Primitives;
+
+namespace Nexus.BuildingBlocks.Messaging;
+
+public enum OutboxStatus
+{
+    Pending = 1,
+    Processing = 2,
+    Published = 3,
+    DeadLettered = 4
+}
+
+public sealed class OutboxMessage : Entity
+{
+    private OutboxMessage() { }
+
+    public Guid EventId { get; private set; }
+    public string EventType { get; private set; } = string.Empty;
+    public Guid? TenantId { get; private set; }
+    public string CorrelationId { get; private set; } = string.Empty;
+    public int SchemaVersion { get; private set; }
+    public string PayloadJson { get; private set; } = "{}";
+    public DateTimeOffset OccurredAt { get; private set; }
+    public DateTimeOffset CreatedAt { get; private set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? ProcessedAt { get; private set; }
+    public DateTimeOffset NextAttemptAt { get; private set; } = DateTimeOffset.UtcNow;
+    public int RetryCount { get; private set; }
+    public OutboxStatus Status { get; private set; } = OutboxStatus.Pending;
+    public string? LastError { get; private set; }
+
+    public static OutboxMessage FromEnvelope(EventEnvelope envelope)
+    {
+        return new OutboxMessage
+        {
+            Id = Guid.CreateVersion7(),
+            EventId = envelope.EventId,
+            EventType = envelope.EventType,
+            TenantId = envelope.TenantId,
+            CorrelationId = envelope.CorrelationId,
+            SchemaVersion = envelope.SchemaVersion,
+            PayloadJson = envelope.Payload.GetRawText(),
+            OccurredAt = envelope.OccurredAt,
+            CreatedAt = DateTimeOffset.UtcNow,
+            NextAttemptAt = DateTimeOffset.UtcNow,
+            Status = OutboxStatus.Pending
+        };
+    }
+
+    public EventEnvelope ToEnvelope()
+    {
+        using var doc = JsonDocument.Parse(PayloadJson);
+        return new EventEnvelope(
+            EventId,
+            EventType,
+            TenantId,
+            OccurredAt,
+            CorrelationId,
+            SchemaVersion,
+            doc.RootElement.Clone());
+    }
+
+    public void MarkPublished(DateTimeOffset utcNow)
+    {
+        Status = OutboxStatus.Published;
+        ProcessedAt = utcNow;
+        LastError = null;
+    }
+
+    public void RecordFailure(string error, DateTimeOffset utcNow, int maxRetries)
+    {
+        RetryCount++;
+        LastError = error.Length > 1900 ? error[..1900] : error;
+
+        if (RetryCount >= maxRetries)
+        {
+            Status = OutboxStatus.DeadLettered;
+            ProcessedAt = utcNow;
+        }
+        else
+        {
+            Status = OutboxStatus.Pending;
+            var backoffSeconds = Math.Min(300, (int)Math.Pow(2, RetryCount) * 5);
+            NextAttemptAt = utcNow.AddSeconds(backoffSeconds);
+        }
+    }
+}
+
+public sealed class InboxMessage : Entity
+{
+    private InboxMessage() { }
+
+    public Guid EventId { get; private set; }
+    public string ConsumerName { get; private set; } = string.Empty;
+    public string EventType { get; private set; } = string.Empty;
+    public Guid? TenantId { get; private set; }
+    public DateTimeOffset ProcessedAt { get; private set; }
+
+    public static InboxMessage Create(Guid eventId, string consumerName, string eventType, Guid? tenantId, DateTimeOffset utcNow)
+        => new()
+        {
+            Id = Guid.CreateVersion7(),
+            EventId = eventId,
+            ConsumerName = consumerName,
+            EventType = eventType,
+            TenantId = tenantId,
+            ProcessedAt = utcNow
+        };
+}
+
+public sealed class DeadLetterMessage : Entity
+{
+    private DeadLetterMessage() { }
+
+    public Guid EventId { get; private set; }
+    public string EventType { get; private set; } = string.Empty;
+    public Guid? TenantId { get; private set; }
+    public string CorrelationId { get; private set; } = string.Empty;
+    public string PayloadJson { get; private set; } = "{}";
+    public string Reason { get; private set; } = string.Empty;
+    public int RetryCount { get; private set; }
+    public DateTimeOffset FailedAt { get; private set; }
+
+    public static DeadLetterMessage FromOutbox(OutboxMessage msg, string reason, DateTimeOffset utcNow)
+        => new()
+        {
+            Id = Guid.CreateVersion7(),
+            EventId = msg.EventId,
+            EventType = msg.EventType,
+            TenantId = msg.TenantId,
+            CorrelationId = msg.CorrelationId,
+            PayloadJson = msg.PayloadJson,
+            Reason = reason.Length > 1900 ? reason[..1900] : reason,
+            RetryCount = msg.RetryCount,
+            FailedAt = utcNow
+        };
+}
+
+public sealed class IdempotencyRecord : Entity
+{
+    private IdempotencyRecord() { }
+
+    public string Key { get; private set; } = string.Empty;
+    public Guid? TenantId { get; private set; }
+    public string Route { get; private set; } = string.Empty;
+    public string RequestHash { get; private set; } = string.Empty;
+    public int StatusCode { get; private set; }
+    public string ResponseBody { get; private set; } = string.Empty;
+    public string ContentType { get; private set; } = "application/json";
+    public bool IsCompleted { get; private set; }
+    public DateTimeOffset CreatedAt { get; private set; }
+    public DateTimeOffset ExpiresAt { get; private set; }
+
+    public static IdempotencyRecord Start(string key, Guid? tenantId, string route, string requestHash, DateTimeOffset utcNow)
+        => new()
+        {
+            Id = Guid.CreateVersion7(),
+            Key = key,
+            TenantId = tenantId,
+            Route = route,
+            RequestHash = requestHash,
+            IsCompleted = false,
+            CreatedAt = utcNow,
+            ExpiresAt = utcNow.AddHours(24)
+        };
+
+    public void Complete(int statusCode, string responseBody, string contentType)
+    {
+        StatusCode = statusCode;
+        ResponseBody = responseBody;
+        ContentType = contentType;
+        IsCompleted = true;
+    }
+}
+
+public sealed class MessagingDbContext(
+    DbContextOptions<MessagingDbContext> options,
+    ITenantContext tenantContext,
+    ICurrentUser currentUser,
+    ISystemClock clock)
+    : ModuleDbContextBase(options, tenantContext, currentUser, clock)
+{
+    public override string SchemaName => "messaging";
+    protected override bool OwnsOutboxTable => true;
+
+    public DbSet<InboxMessage> InboxMessages => Set<InboxMessage>();
+    public DbSet<DeadLetterMessage> DeadLetterMessages => Set<DeadLetterMessage>();
+    public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+
+        modelBuilder.Entity<InboxMessage>(builder =>
+        {
+            builder.ToTable("inbox_messages", "messaging");
+            builder.HasKey(x => x.Id);
+            builder.Property(x => x.ConsumerName).HasMaxLength(150).IsRequired();
+            builder.Property(x => x.EventType).HasMaxLength(200).IsRequired();
+            builder.HasIndex(x => new { x.EventId, x.ConsumerName }).IsUnique();
+        });
+
+        modelBuilder.Entity<DeadLetterMessage>(builder =>
+        {
+            builder.ToTable("dead_letter_messages", "messaging");
+            builder.HasKey(x => x.Id);
+            builder.Property(x => x.EventType).HasMaxLength(200).IsRequired();
+            builder.Property(x => x.CorrelationId).HasMaxLength(100).IsRequired();
+            builder.Property(x => x.PayloadJson).HasColumnType("jsonb").IsRequired();
+            builder.Property(x => x.Reason).HasMaxLength(2000).IsRequired();
+            builder.HasIndex(x => x.FailedAt);
+        });
+
+        modelBuilder.Entity<IdempotencyRecord>(builder =>
+        {
+            builder.ToTable("idempotency_records", "messaging");
+            builder.HasKey(x => x.Id);
+            builder.Property(x => x.Key).HasMaxLength(150).IsRequired();
+            builder.Property(x => x.Route).HasMaxLength(300).IsRequired();
+            builder.Property(x => x.RequestHash).HasMaxLength(128).IsRequired();
+            builder.Property(x => x.ContentType).HasMaxLength(100).IsRequired();
+            builder.HasIndex(x => new { x.Key, x.TenantId, x.Route }).IsUnique();
+            builder.HasIndex(x => x.ExpiresAt);
+        });
+    }
+}

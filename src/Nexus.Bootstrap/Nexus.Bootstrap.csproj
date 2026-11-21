@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Nexus.Bootstrap</AssemblyName>
+    <RootNamespace>Nexus.Bootstrap</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Nexus.SharedKernel\Nexus.SharedKernel.csproj" />
+    <ProjectReference Include="..\Nexus.BuildingBlocks\Nexus.BuildingBlocks.csproj" />
+    <ProjectReference Include="..\Modules\Tenancy\Nexus.Modules.Tenancy.csproj" />
+    <ProjectReference Include="..\Modules\Organization\Nexus.Modules.Organization.csproj" />
+    <ProjectReference Include="..\Modules\Identity\Nexus.Modules.Identity.csproj" />
+    <ProjectReference Include="..\Modules\AccessControl\Nexus.Modules.AccessControl.csproj" />
+    <ProjectReference Include="..\Modules\Audit\Nexus.Modules.Audit.csproj" />
+    <ProjectReference Include="..\Modules\Workflow\Nexus.Modules.Workflow.csproj" />
+    <ProjectReference Include="..\Modules\Subscription\Nexus.Modules.Subscription.csproj" />
+    <ProjectReference Include="..\Modules\Configuration\Nexus.Modules.Configuration.csproj" />
+    <ProjectReference Include="..\Modules\Integration\Nexus.Modules.Integration.csproj" />
+    <ProjectReference Include="..\Modules\Notification\Nexus.Modules.Notification.csproj" />
+    <ProjectReference Include="..\Modules\FileStorage\Nexus.Modules.FileStorage.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Serilog.AspNetCore" />
+    <PackageReference Include="Serilog.Formatting.Compact" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
+    <PackageReference Include="AspNetCore.HealthChecks.NpgSql" />
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" />
+  </ItemGroup>
+</Project>
