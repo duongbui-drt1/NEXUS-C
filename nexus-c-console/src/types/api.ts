@@ -57,6 +57,15 @@ export interface CurrentUserMe {
   isPlatformUser: boolean;
 }
 
+export interface EffectivePermissionsResponse {
+  userId: string;
+  tenantId: string | null;
+  scope: 'platform' | 'tenant' | string;
+  isPlatformUser: boolean;
+  roles: string[];
+  permissions: string[];
+}
+
 export interface SessionDto {
   id: string;
   userId: string;

@@ -7,7 +7,7 @@ using Serilog;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddNexusObservability();
-builder.Services.AddNexusFoundationCore(builder.Configuration);
+builder.Services.AddNexusFoundationCore(builder.Configuration, builder.Environment.EnvironmentName);
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -49,8 +49,9 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 
 app.MapControllers();
 
-// Opt-in migration & initial admin bootstrap (only when explicitly enabled via environment variables)
-if (string.Equals(Environment.GetEnvironmentVariable("NEXUS_RUN_MIGRATIONS"), "true", StringComparison.OrdinalIgnoreCase))
+// Local single-node development convenience ONLY; production deployments MUST run the dedicated Nexus.Migrator job before starting API replicas.
+if (app.Environment.IsDevelopment() &&
+    string.Equals(Environment.GetEnvironmentVariable("NEXUS_RUN_MIGRATIONS"), "true", StringComparison.OrdinalIgnoreCase))
 {
     using var scope = app.Services.CreateScope();
     var migrator = scope.ServiceProvider.GetRequiredService<NexusDatabaseMigrator>();

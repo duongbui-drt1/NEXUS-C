@@ -39,6 +39,25 @@ function RequirePermission({
   children: ReactNode;
 }) {
   const auth = useAuth();
+
+  if (auth.permissionStatus === 'loading' || auth.permissionStatus === 'idle') {
+    return <LoadingState label="Đang xác minh quyền truy cập..." />;
+  }
+
+  if (auth.permissionStatus === 'failed') {
+    return (
+      <div className="alert alert-danger" role="alert">
+        <div>
+          <strong>Không thể tải danh sách quyền từ máy chủ (Fail-Closed).</strong>
+          <div style={{ marginTop: 4 }}>Quyền truy cập mặc định bị từ chối cho tới khi xác minh thành công.</div>
+          <button type="button" className="btn btn-sm" style={{ marginTop: 8 }} onClick={() => void auth.reloadPermissions()}>
+            Thử tải lại quyền
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (platformOnly && !auth.isPlatformUser) {
     return (
       <div className="alert alert-danger" role="alert">
@@ -120,7 +139,14 @@ export function AppRouter() {
           }
         />
 
-        <Route path="api-management/*" element={<LazyWrap><ApiManagementPage /></LazyWrap>} />
+        <Route
+          path="api-management/*"
+          element={
+            <RequirePermission permission="platform.api.read">
+              <LazyWrap><ApiManagementPage /></LazyWrap>
+            </RequirePermission>
+          }
+        />
 
         <Route
           path="integrations"
@@ -131,7 +157,14 @@ export function AppRouter() {
           }
         />
 
-        <Route path="operations" element={<LazyWrap><OperationsPage /></LazyWrap>} />
+        <Route
+          path="operations"
+          element={
+            <RequirePermission permission="platform.operations.read" platformOnly>
+              <LazyWrap><OperationsPage /></LazyWrap>
+            </RequirePermission>
+          }
+        />
 
         <Route
           path="audit"

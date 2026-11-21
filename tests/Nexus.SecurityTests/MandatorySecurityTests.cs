@@ -130,12 +130,14 @@ public sealed class MandatorySecurityTests(NexusPostgresFixture fixture) : IClas
         // Auditor is strictly read-only
         Assert.Equal(HttpStatusCode.Forbidden, (await auditorClient.PutAsJsonAsync("/api/v1/platform/configuration/tenant",
             new Nexus.Modules.Configuration.Application.UpsertSettingRequest("k", "v"))).StatusCode);
-        // TenantAdmin CANNOT assign PlatformSuperAdmin role!
+        // TenantAdmin CANNOT see or assign PlatformSuperAdmin role (blocked by hybrid PostgreSQL RLS -> 404 non-disclosure, or 403 Forbidden)!
         var allRoles = await ReadDataAsync<List<RoleDto>>(await admin.GetAsync("/api/v1/platform/roles"));
         var superAdminRole = allRoles.First(r => r.Name == SystemRoles.PlatformSuperAdmin);
         var escalateResp = await tAdminClient.PostAsJsonAsync("/api/v1/platform/roles/assign",
             new AssignRoleRequest(empUser.Id, superAdminRole.Id));
-        Assert.Equal(HttpStatusCode.Forbidden, escalateResp.StatusCode);
+        Assert.True(
+            escalateResp.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.NotFound,
+            $"Expected 403 or 404 when tenant admin tries to assign PlatformSuperAdmin, got {escalateResp.StatusCode}");
 
         // Case 15: Audit logs cannot be modified or deleted by tenant user (405 Method Not Allowed)
         Assert.Equal(HttpStatusCode.MethodNotAllowed, (await auditorClient.DeleteAsync("/api/v1/platform/audit")).StatusCode);

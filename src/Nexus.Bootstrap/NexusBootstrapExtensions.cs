@@ -71,8 +71,10 @@ public static class NexusBootstrapExtensions
         return builder;
     }
 
-    public static IServiceCollection AddNexusFoundationCore(this IServiceCollection services, IConfiguration configuration)
+    public static IServiceCollection AddNexusFoundationCore(this IServiceCollection services, IConfiguration configuration, string environmentName = "Production")
     {
+        ValidateRuntimeSecurityConfiguration(configuration, environmentName);
+
         var connectionString = configuration.GetConnectionString("DefaultConnection")
             ?? throw new InvalidOperationException("ConnectionStrings:DefaultConnection is required.");
 
@@ -236,4 +238,50 @@ public static class NexusBootstrapExtensions
 
         return services;
     }
+
+    public static void ValidateRuntimeSecurityConfiguration(IConfiguration configuration, string environmentName)
+    {
+        var isDevOrTest = string.Equals(environmentName, "Development", StringComparison.OrdinalIgnoreCase)
+                          || string.Equals(environmentName, "Testing", StringComparison.OrdinalIgnoreCase);
+
+        if (isDevOrTest)
+        {
+            return;
+        }
+
+        var jwtKey = configuration["Jwt:SigningKey"] ?? string.Empty;
+        if (jwtKey.Length < 32 || ContainsInsecurePlaceholder(jwtKey))
+        {
+            throw new InvalidOperationException(
+                "SECURITY STARTUP FAILURE: Jwt:SigningKey must be configured with at least 32 cryptographically random characters in non-development environments.");
+        }
+
+        var storageSecret = configuration["ObjectStorage:SigningSecret"] ?? string.Empty;
+        if (storageSecret.Length < 32 || ContainsInsecurePlaceholder(storageSecret))
+        {
+            throw new InvalidOperationException(
+                "SECURITY STARTUP FAILURE: ObjectStorage:SigningSecret must be configured with at least 32 characters in non-development environments.");
+        }
+
+        var defaultConn = configuration.GetConnectionString("DefaultConnection") ?? string.Empty;
+        if (defaultConn.Contains("dev_password", StringComparison.OrdinalIgnoreCase) ||
+            defaultConn.Contains("Username=postgres", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "SECURITY STARTUP FAILURE: Production DefaultConnection cannot use development credentials or the postgres superuser.");
+        }
+
+        var corsOrigins = configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
+        if (corsOrigins.Any(o => o.Trim() == "*"))
+        {
+            throw new InvalidOperationException(
+                "SECURITY STARTUP FAILURE: Wildcard '*' CORS origin is prohibited in production.");
+        }
+    }
+
+    private static bool ContainsInsecurePlaceholder(string value)
+        => value.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase)
+           || value.Contains("REPLACE_WITH", StringComparison.OrdinalIgnoreCase)
+           || value.Contains("PLACEHOLDER", StringComparison.OrdinalIgnoreCase)
+           || value.Contains("DEV_ONLY", StringComparison.OrdinalIgnoreCase);
 }

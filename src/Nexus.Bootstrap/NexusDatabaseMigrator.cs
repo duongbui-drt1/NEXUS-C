@@ -164,6 +164,110 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
+        // Hybrid RLS policies for tables holding both Global/Platform rows and Tenant-specific rows
+        const string hybridRlsSql = @"
+            -- 1. access_control.roles: Tenant scope reads global Tenant system roles + own custom roles; writes ONLY own non-system Tenant roles
+            ALTER TABLE access_control.roles ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE access_control.roles FORCE ROW LEVEL SECURITY;
+            DROP POLICY IF EXISTS nexus_roles_select ON access_control.roles;
+            DROP POLICY IF EXISTS nexus_roles_write ON access_control.roles;
+            CREATE POLICY nexus_roles_select ON access_control.roles
+            FOR SELECT USING (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR (
+                    ""Scope"" = 'Tenant'
+                    AND (
+                        ""TenantId"" IS NULL
+                        OR (
+                            NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                            AND ""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                        )
+                    )
+                )
+            );
+            CREATE POLICY nexus_roles_write ON access_control.roles
+            FOR ALL USING (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR (
+                    ""Scope"" = 'Tenant'
+                    AND ""IsSystemRole"" = false
+                    AND NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                    AND ""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
+            )
+            WITH CHECK (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR (
+                    ""Scope"" = 'Tenant'
+                    AND ""IsSystemRole"" = false
+                    AND NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                    AND ""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
+            );
+
+            -- 2. access_control.user_roles: Strict tenant isolation (Platform scope accesses all; Tenant scope strictly own TenantId)
+            ALTER TABLE access_control.user_roles ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE access_control.user_roles FORCE ROW LEVEL SECURITY;
+            DROP POLICY IF EXISTS nexus_user_roles_isolation ON access_control.user_roles;
+            CREATE POLICY nexus_user_roles_isolation ON access_control.user_roles
+            USING (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR (
+                    NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                    AND ""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
+            )
+            WITH CHECK (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR (
+                    NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                    AND ""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
+            );
+
+            -- 3. configuration.feature_flags: Tenant reads global defaults (TenantId IS NULL) + own overrides; writes ONLY own overrides
+            ALTER TABLE configuration.feature_flags ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE configuration.feature_flags FORCE ROW LEVEL SECURITY;
+            DROP POLICY IF EXISTS nexus_feature_flags_select ON configuration.feature_flags;
+            DROP POLICY IF EXISTS nexus_feature_flags_write ON configuration.feature_flags;
+            CREATE POLICY nexus_feature_flags_select ON configuration.feature_flags
+            FOR SELECT USING (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR ""TenantId"" IS NULL
+                OR (
+                    NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                    AND ""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
+            );
+            CREATE POLICY nexus_feature_flags_write ON configuration.feature_flags
+            FOR ALL USING (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR (
+                    NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                    AND ""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
+            )
+            WITH CHECK (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR (
+                    NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                    AND ""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
+            );";
+
+        await using (var hybridCmd = new NpgsqlCommand(hybridRlsSql, conn))
+        {
+            await hybridCmd.ExecuteNonQueryAsync(ct);
+        }
+
         // Audit immutability trigger (append-only at PostgreSQL level!)
         const string auditImmutabilitySql = @"
             CREATE OR REPLACE FUNCTION audit.prevent_audit_mutation()
@@ -206,7 +310,9 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
                 var grantSql = $@"
                     GRANT USAGE ON SCHEMA ""{schema}"" TO ""{appRoleName}"";
                     GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ""{schema}"" TO ""{appRoleName}"";
-                    GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ""{schema}"" TO ""{appRoleName}"";";
+                    GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ""{schema}"" TO ""{appRoleName}"";
+                    ALTER DEFAULT PRIVILEGES IN SCHEMA ""{schema}"" GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ""{appRoleName}"";
+                    ALTER DEFAULT PRIVILEGES IN SCHEMA ""{schema}"" GRANT USAGE, SELECT ON SEQUENCES TO ""{appRoleName}"";";
                 await using var gCmd = new NpgsqlCommand(grantSql, conn);
                 await gCmd.ExecuteNonQueryAsync(ct);
             }
@@ -246,6 +352,18 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
         if (result.IsFailure)
         {
             logger.LogWarning("Bootstrap platform admin creation skipped or failed: {Error}", result.Error.Message);
+            return;
         }
+
+        var auditWriter = scope.ServiceProvider.GetRequiredService<Nexus.SharedKernel.Contracts.IAuditWriter>();
+        await auditWriter.WriteAsync(new Nexus.SharedKernel.Contracts.AuditEntryRequest(
+            Action: "platform.bootstrap.admin_created",
+            ResourceType: "User",
+            ResourceId: result.Value.Id.ToString("D"),
+            TenantId: null,
+            Result: "Success",
+            Reason: "Initial platform administrator provisioned via explicit bootstrap configuration.",
+            AfterState: new { result.Value.Id, result.Value.Email, Role = SystemRoles.PlatformSuperAdmin },
+            IsCrossTenantPlatformAccess: true), ct);
     }
 }

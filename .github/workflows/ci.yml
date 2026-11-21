@@ -2,12 +2,13 @@ name: NEXUS Foundation CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, 'fix/**' ]
   pull_request:
     branches: [ main, develop ]
 
 jobs:
-  build-and-test:
+  backend-ci:
+    name: Backend (.NET 10 + PostgreSQL 17)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -35,16 +36,48 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore NEXUS.sln
 
-      - name: Check formatting
+      - name: Check code formatting
         run: dotnet format NEXUS.sln --verify-no-changes
 
-      - name: Build (Release)
+      - name: Build solution (Release, including Nexus.Migrator)
         run: dotnet build NEXUS.sln -c Release --no-restore
 
       - name: Inspect vulnerable packages
         run: dotnet list NEXUS.sln package --vulnerable --include-transitive
 
-      - name: Run all tests (Unit, Architecture, Integration, API, Security)
+      - name: Run all backend tests (Unit, Architecture, Integration/RLS, API, Security)
         env:
           NEXUS_TEST_PG_ADMIN_CONN: "Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=ci_postgres_password"
         run: dotnet test NEXUS.sln -c Release --no-build --verbosity normal
+
+  frontend-ci:
+    name: Frontend (NEXUS C Console — Node 24)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nexus-c-console
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 24 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: nexus-c-console/package-lock.json
+
+      - name: Install dependencies (clean lockfile)
+        run: npm ci
+
+      - name: TypeScript strict typecheck
+        run: npm run typecheck
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Vitest suite
+        run: npm test
+
+      - name: Production static build
+        run: npm run build

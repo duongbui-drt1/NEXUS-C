@@ -29,6 +29,8 @@ public sealed class AccessControlService(
     AccessControlDbContext db,
     ITenantContext tenantContext,
     ICurrentUser currentUser,
+    IUserDirectoryReader userDirectory,
+    ITenantAccessValidator tenantValidator,
     IAuditWriter auditWriter) : IAccessControlService, IPermissionEvaluator
 {
     public async Task SeedDefaultsAsync(CancellationToken ct = default)
@@ -58,7 +60,7 @@ public sealed class AccessControlService(
                 [
                     Permissions.TenantsRead, Permissions.UsersRead, Permissions.RolesRead,
                     Permissions.AuditRead, Permissions.AuditReadAllTenants, Permissions.SubscriptionsRead,
-                    Permissions.ConfigurationRead
+                    Permissions.ConfigurationRead, Permissions.ApiRead, Permissions.OperationsRead
                 ]),
 
             [SystemRoles.TenantOwner] = (
@@ -77,7 +79,8 @@ public sealed class AccessControlService(
                     Permissions.ConfigurationRead, Permissions.ConfigurationManage,
                     Permissions.IntegrationsRead, Permissions.IntegrationsManage,
                     Permissions.NotificationsRead, Permissions.NotificationsManage,
-                    Permissions.FilesRead, Permissions.FilesUpload, Permissions.FilesDelete
+                    Permissions.FilesRead, Permissions.FilesUpload, Permissions.FilesDelete,
+                    Permissions.ApiRead
                 ]),
 
             [SystemRoles.CFO] = (
@@ -276,6 +279,25 @@ public sealed class AccessControlService(
             return Error.Validation("TENANT_CONTEXT_REQUIRED", "A tenant context is required to assign a tenant-scoped role.");
         }
 
+        // Verify target user exists
+        var targetUser = await userDirectory.GetByIdAsync(request.UserId, ct);
+        if (targetUser is null)
+        {
+            return Error.NotFound("USER_NOT_FOUND", $"User '{request.UserId}' was not found.");
+        }
+
+        // For tenant-scoped role assignments, verify the user holds an active membership in the target tenant!
+        if (role.Scope == RoleScopeType.Tenant && effectiveTenantId.HasValue)
+        {
+            var membership = await tenantValidator.ValidateMembershipAsync(request.UserId, effectiveTenantId.Value, ct);
+            if (membership is null || !membership.IsActiveMember)
+            {
+                return Error.Forbidden(
+                    "USER_NOT_TENANT_MEMBER",
+                    "Cannot assign a tenant-scoped role to a user who does not have an active membership in that tenant.");
+            }
+        }
+
         var exists = await db.UserRoles.AsNoTracking()
             .AnyAsync(ur => ur.UserId == request.UserId && ur.RoleId == role.Id && ur.TenantId == effectiveTenantId, ct);
         if (exists)
@@ -322,7 +344,13 @@ public sealed class AccessControlService(
         var query = db.UserRoles.AsNoTracking().Include(ur => ur.Role).Where(ur => ur.UserId == userId);
         if (!currentUser.IsPlatformUser)
         {
-            query = query.Where(ur => ur.TenantId == tenantContext.TenantId);
+            if (!tenantContext.HasTenant)
+            {
+                return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+            }
+
+            var tid = tenantContext.TenantId!.Value;
+            query = query.Where(ur => ur.TenantId == tid && ur.Role!.Scope == RoleScopeType.Tenant);
         }
 
         var list = await query
@@ -330,6 +358,26 @@ public sealed class AccessControlService(
             .ToListAsync(ct);
 
         return list;
+    }
+
+    public async Task<IReadOnlyList<string>> GetRoleNamesAsync(Guid userId, Guid? tenantId, bool isPlatformScope, CancellationToken ct = default)
+    {
+        var roleQuery = db.UserRoles.AsNoTracking().Where(ur => ur.UserId == userId);
+
+        if (isPlatformScope && !tenantId.HasValue)
+        {
+            roleQuery = roleQuery.Where(ur => ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform);
+        }
+        else if (tenantId.HasValue)
+        {
+            roleQuery = roleQuery.Where(ur => ur.TenantId == tenantId.Value && ur.Role!.Scope == RoleScopeType.Tenant);
+        }
+        else
+        {
+            return [];
+        }
+
+        return await roleQuery.Select(ur => ur.Role!.Name).Distinct().OrderBy(n => n).ToListAsync(ct);
     }
 
     // === IPermissionEvaluator ===

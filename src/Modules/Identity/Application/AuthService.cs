@@ -554,10 +554,26 @@ public sealed class AuthService(
 
     public async Task<Result> RevokeSessionAsync(Guid userId, Guid sessionId, string reason, CancellationToken ct = default)
     {
+        // When a non-platform admin revokes another user's session, enforce same-tenant membership and protect platform accounts
+        if (currentUser.IsAuthenticated && !currentUser.IsPlatformUser && currentUser.UserId != userId)
+        {
+            var scopeCheck = await EnsureTargetUserManageableByTenantAdminAsync(userId, ct);
+            if (scopeCheck.IsFailure)
+            {
+                return scopeCheck;
+            }
+        }
+
         var session = await db.UserSessions.FirstOrDefaultAsync(s => s.Id == sessionId && s.UserId == userId, ct);
         if (session is null)
         {
             return Result.Failure(Error.NotFound("SESSION_NOT_FOUND", "Session was not found."));
+        }
+
+        if (currentUser.IsAuthenticated && !currentUser.IsPlatformUser && currentUser.UserId != userId &&
+            session.TenantId != tenantContext.TenantId)
+        {
+            return Result.Failure(Error.Forbidden("CROSS_TENANT_SESSION_REVOKE_DENIED", "Cannot revoke a session belonging to another tenant."));
         }
 
         var now = clock.UtcNow;
@@ -590,7 +606,35 @@ public sealed class AuthService(
             return Error.Conflict("USER_ALREADY_EXISTS", $"User with email '{email}' already exists.");
         }
 
-        var effectiveTenantId = request.TenantId ?? tenantContext.TenantId;
+        // Enforce strict tenant-scope boundaries when invoked by a non-platform authenticated actor
+        if (currentUser.IsAuthenticated && !currentUser.IsPlatformUser)
+        {
+            if (request.IsPlatformUser)
+            {
+                return Error.Forbidden("USER_PLATFORM_ESCALATION_DENIED", "Tenant administrators cannot create platform-scoped users.");
+            }
+
+            if (!tenantContext.HasTenant)
+            {
+                return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "A valid tenant context is required.");
+            }
+
+            if (request.TenantId.HasValue && request.TenantId.Value != tenantContext.TenantId!.Value)
+            {
+                return Error.Forbidden("CROSS_TENANT_USER_CREATE_DENIED", "Tenant administrators cannot create users in another tenant.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.RoleName) &&
+                (string.Equals(request.RoleName.Trim(), Nexus.SharedKernel.Security.SystemRoles.PlatformSuperAdmin, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(request.RoleName.Trim(), Nexus.SharedKernel.Security.SystemRoles.PlatformSupport, StringComparison.OrdinalIgnoreCase)))
+            {
+                return Error.Forbidden("ROLE_SCOPE_VIOLATION", "Tenant administrators cannot assign platform-scoped roles.");
+            }
+        }
+
+        var effectiveTenantId = currentUser.IsAuthenticated && !currentUser.IsPlatformUser
+            ? tenantContext.TenantId
+            : request.TenantId ?? tenantContext.TenantId;
         var user = new ApplicationUser
         {
             Id = Guid.CreateVersion7(),
@@ -678,10 +722,26 @@ public sealed class AuthService(
 
     public async Task<Result<PagedResult<UserDto>>> ListUsersAsync(PagedRequest paging, CancellationToken ct = default)
     {
+        IReadOnlyList<Guid>? allowedUserIds = null;
+        if (currentUser.IsAuthenticated && !currentUser.IsPlatformUser)
+        {
+            if (!tenantContext.HasTenant)
+            {
+                return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required to list tenant users.");
+            }
+
+            allowedUserIds = await tenantValidator.GetMemberUserIdsAsync(tenantContext.TenantId!.Value, ct);
+        }
+
         var query = from u in db.Users.AsNoTracking()
                     join p in db.UserProfiles.AsNoTracking() on u.Id equals p.UserId into gp
                     from profile in gp.DefaultIfEmpty()
                     select new { User = u, FullName = profile != null ? profile.FullName : (u.Email ?? string.Empty) };
+
+        if (allowedUserIds is not null)
+        {
+            query = query.Where(x => allowedUserIds.Contains(x.User.Id));
+        }
 
         if (!string.IsNullOrWhiteSpace(paging.Search))
         {
@@ -713,6 +773,15 @@ public sealed class AuthService(
 
     public async Task<Result> DisableUserAsync(Guid userId, string reason, CancellationToken ct = default)
     {
+        if (currentUser.IsAuthenticated && !currentUser.IsPlatformUser)
+        {
+            var scopeCheck = await EnsureTargetUserManageableByTenantAdminAsync(userId, ct);
+            if (scopeCheck.IsFailure)
+            {
+                return scopeCheck;
+            }
+        }
+
         var user = await userManager.FindByIdAsync(userId.ToString("D"));
         if (user is null) return Result.Failure(Error.NotFound("USER_NOT_FOUND", "User not found."));
 
@@ -740,6 +809,15 @@ public sealed class AuthService(
 
     public async Task<Result> EnableUserAsync(Guid userId, CancellationToken ct = default)
     {
+        if (currentUser.IsAuthenticated && !currentUser.IsPlatformUser)
+        {
+            var scopeCheck = await EnsureTargetUserManageableByTenantAdminAsync(userId, ct);
+            if (scopeCheck.IsFailure)
+            {
+                return scopeCheck;
+            }
+        }
+
         var user = await userManager.FindByIdAsync(userId.ToString("D"));
         if (user is null) return Result.Failure(Error.NotFound("USER_NOT_FOUND", "User not found."));
 
@@ -752,6 +830,33 @@ public sealed class AuthService(
 
         await auditWriter.WriteAsync(new AuditEntryRequest(
             "identity.user.enable", "User", userId.ToString("D"), tenantContext.TenantId, "Success"), ct);
+
+        return Result.Success();
+    }
+
+    private async Task<Result> EnsureTargetUserManageableByTenantAdminAsync(Guid targetUserId, CancellationToken ct)
+    {
+        if (!tenantContext.HasTenant)
+        {
+            return Result.Failure(Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required."));
+        }
+
+        var target = await userManager.FindByIdAsync(targetUserId.ToString("D"));
+        if (target is null)
+        {
+            return Result.Failure(Error.NotFound("USER_NOT_FOUND", "User not found."));
+        }
+
+        if (target.IsPlatformUser)
+        {
+            return Result.Failure(Error.Forbidden("CROSS_TENANT_USER_ACTION_DENIED", "Tenant administrators cannot manage platform accounts."));
+        }
+
+        var membership = await tenantValidator.ValidateMembershipAsync(targetUserId, tenantContext.TenantId!.Value, ct);
+        if (membership is null || !membership.IsActiveMember)
+        {
+            return Result.Failure(Error.Forbidden("CROSS_TENANT_USER_ACTION_DENIED", "Target user is not an active member of your tenant."));
+        }
 
         return Result.Success();
     }

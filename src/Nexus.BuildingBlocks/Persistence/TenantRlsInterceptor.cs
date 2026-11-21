@@ -10,12 +10,13 @@ namespace Nexus.BuildingBlocks.Persistence;
 /// Enforces PostgreSQL Row-Level Security (RLS) session variables on every connection and transaction,
 /// and clears them on connection close so pooled Npgsql connections never leak tenant context.
 /// </summary>
-public sealed class TenantRlsInterceptor(ITenantContext tenantContext) : DbConnectionInterceptor
+public sealed class TenantRlsInterceptor(ITenantContext tenantContext, ICurrentUser currentUser) : DbConnectionInterceptor
 {
     internal sealed class AppliedState
     {
         public string TenantId { get; set; } = string.Empty;
         public string Bypass { get; set; } = "off";
+        public string PlatformScope { get; set; } = "off";
         public bool IsSet { get; set; }
     }
 
@@ -61,18 +62,20 @@ public sealed class TenantRlsInterceptor(ITenantContext tenantContext) : DbConne
             return;
         }
 
-        var (tid, bypass) = GetDesiredValues();
+        var (tid, bypass, platformScope) = GetDesiredValues();
         using var cmd = connection.CreateCommand();
         cmd.Transaction = transaction;
-        cmd.CommandText = "SELECT set_config('app.current_tenant_id', @tid, @is_local), set_config('app.bypass_rls', @bypass, @is_local);";
+        cmd.CommandText = "SELECT set_config('app.current_tenant_id', @tid, @is_local), set_config('app.bypass_rls', @bypass, @is_local), set_config('app.is_platform_scope', @platform_scope, @is_local);";
         AddParam(cmd, "@tid", tid);
         AddParam(cmd, "@bypass", bypass);
+        AddParam(cmd, "@platform_scope", platformScope);
         AddParam(cmd, "@is_local", isLocal);
         cmd.ExecuteNonQuery();
 
         var state = ConnectionStates.GetOrCreateValue(connection);
         state.TenantId = tid;
         state.Bypass = bypass;
+        state.PlatformScope = platformScope;
         state.IsSet = true;
     }
 
@@ -87,18 +90,20 @@ public sealed class TenantRlsInterceptor(ITenantContext tenantContext) : DbConne
             return;
         }
 
-        var (tid, bypass) = GetDesiredValues();
+        var (tid, bypass, platformScope) = GetDesiredValues();
         await using var cmd = connection.CreateCommand();
         cmd.Transaction = transaction;
-        cmd.CommandText = "SELECT set_config('app.current_tenant_id', @tid, @is_local), set_config('app.bypass_rls', @bypass, @is_local);";
+        cmd.CommandText = "SELECT set_config('app.current_tenant_id', @tid, @is_local), set_config('app.bypass_rls', @bypass, @is_local), set_config('app.is_platform_scope', @platform_scope, @is_local);";
         AddParam(cmd, "@tid", tid);
         AddParam(cmd, "@bypass", bypass);
+        AddParam(cmd, "@platform_scope", platformScope);
         AddParam(cmd, "@is_local", isLocal);
         await cmd.ExecuteNonQueryAsync(ct);
 
         var state = ConnectionStates.GetOrCreateValue(connection);
         state.TenantId = tid;
         state.Bypass = bypass;
+        state.PlatformScope = platformScope;
         state.IsSet = true;
     }
 
@@ -112,7 +117,7 @@ public sealed class TenantRlsInterceptor(ITenantContext tenantContext) : DbConne
         try
         {
             using var cmd = connection.CreateCommand();
-            cmd.CommandText = "SELECT set_config('app.current_tenant_id', '', false), set_config('app.bypass_rls', 'off', false);";
+            cmd.CommandText = "SELECT set_config('app.current_tenant_id', '', false), set_config('app.bypass_rls', 'off', false), set_config('app.is_platform_scope', 'off', false);";
             cmd.ExecuteNonQuery();
         }
         catch
@@ -135,7 +140,7 @@ public sealed class TenantRlsInterceptor(ITenantContext tenantContext) : DbConne
         try
         {
             await using var cmd = connection.CreateCommand();
-            cmd.CommandText = "SELECT set_config('app.current_tenant_id', '', false), set_config('app.bypass_rls', 'off', false);";
+            cmd.CommandText = "SELECT set_config('app.current_tenant_id', '', false), set_config('app.bypass_rls', 'off', false), set_config('app.is_platform_scope', 'off', false);";
             await cmd.ExecuteNonQueryAsync();
         }
         catch
@@ -148,11 +153,14 @@ public sealed class TenantRlsInterceptor(ITenantContext tenantContext) : DbConne
         }
     }
 
-    internal (string TenantId, string Bypass) GetDesiredValues()
+    internal (string TenantId, string Bypass, string PlatformScope) GetDesiredValues()
     {
         var tid = tenantContext.HasTenant ? tenantContext.TenantId!.Value.ToString("D") : string.Empty;
         var bypass = tenantContext.IsPlatformBypass ? "on" : "off";
-        return (tid, bypass);
+        var platformScope = tenantContext.IsPlatformBypass || (currentUser.IsAuthenticated && currentUser.IsPlatformUser && !tenantContext.HasTenant)
+            ? "on"
+            : "off";
+        return (tid, bypass, platformScope);
     }
 
     private static void AddParam(DbCommand cmd, string name, object value)
@@ -251,9 +259,9 @@ public sealed class TenantRlsCommandInterceptor(TenantRlsInterceptor connectionI
             return;
         }
 
-        var (tid, bypass) = connectionInterceptor.GetDesiredValues();
+        var (tid, bypass, platformScope) = connectionInterceptor.GetDesiredValues();
         var state = TenantRlsInterceptor.ConnectionStates.GetOrCreateValue(command.Connection);
-        if (!state.IsSet || state.TenantId != tid || state.Bypass != bypass)
+        if (!state.IsSet || state.TenantId != tid || state.Bypass != bypass || state.PlatformScope != platformScope)
         {
             connectionInterceptor.ApplySessionVariables(command.Connection, command.Transaction, command.Transaction is not null);
         }
@@ -266,9 +274,9 @@ public sealed class TenantRlsCommandInterceptor(TenantRlsInterceptor connectionI
             return;
         }
 
-        var (tid, bypass) = connectionInterceptor.GetDesiredValues();
+        var (tid, bypass, platformScope) = connectionInterceptor.GetDesiredValues();
         var state = TenantRlsInterceptor.ConnectionStates.GetOrCreateValue(command.Connection);
-        if (!state.IsSet || state.TenantId != tid || state.Bypass != bypass)
+        if (!state.IsSet || state.TenantId != tid || state.Bypass != bypass || state.PlatformScope != platformScope)
         {
             await connectionInterceptor.ApplySessionVariablesAsync(command.Connection, command.Transaction, command.Transaction is not null, ct);
         }

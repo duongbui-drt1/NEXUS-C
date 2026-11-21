@@ -25,6 +25,7 @@ All endpoints return:
 - `GET /api/v1/auth/sessions` — List authenticated user's sessions
 - `DELETE /api/v1/auth/sessions/{sessionId}` — Revoke a specific session
 - `GET /api/v1/auth/me` — Inspect current authenticated principal claims
+- `GET /api/v1/auth/permissions` — Return effective roles and permissions for the authenticated principal in their active Platform or Tenant scope (never accepts client `userId`)
 
 ### Tenants (`/api/v1/platform/tenants`)
 - `POST /api/v1/platform/tenants` (`platform.tenants.create`)

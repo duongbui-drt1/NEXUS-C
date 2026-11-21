@@ -4,12 +4,17 @@ using Microsoft.AspNetCore.RateLimiting;
 using Nexus.BuildingBlocks.Web;
 using Nexus.Modules.Identity.Application;
 using Nexus.SharedKernel.Context;
+using Nexus.SharedKernel.Contracts;
 
 namespace Nexus.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/auth")]
-public sealed class AuthController(IAuthService authService, ICurrentUser currentUser) : ControllerBase
+public sealed class AuthController(
+    IAuthService authService,
+    ICurrentUser currentUser,
+    ITenantContext tenantContext,
+    IPermissionEvaluator permissionEvaluator) : ControllerBase
 {
     [HttpPost("login")]
     [AllowAnonymous]
@@ -75,6 +80,38 @@ public sealed class AuthController(IAuthService authService, ICurrentUser curren
             currentUser.Scope,
             currentUser.IsPlatformUser
         };
+        return Ok(ApiResponse<object>.Ok(data, ApiResultMapper.GetCorrelationId(HttpContext)));
+    }
+
+    /// <summary>
+    /// Returns the authenticated principal's effective roles and permissions in the current Platform or Tenant scope.
+    /// Never accepts a client-supplied userId or tenantId parameter.
+    /// </summary>
+    [HttpGet("permissions")]
+    [Authorize]
+    public async Task<IActionResult> EffectivePermissions(CancellationToken ct)
+    {
+        if (!currentUser.UserId.HasValue)
+        {
+            return Unauthorized();
+        }
+
+        var effectiveTenantId = tenantContext.TenantId ?? currentUser.TenantId;
+        var isPlatformScope = currentUser.IsPlatformUser && !effectiveTenantId.HasValue;
+
+        var roles = await permissionEvaluator.GetRoleNamesAsync(currentUser.UserId.Value, effectiveTenantId, isPlatformScope, ct);
+        var permissions = await permissionEvaluator.GetPermissionsAsync(currentUser.UserId.Value, effectiveTenantId, isPlatformScope, ct);
+
+        var data = new
+        {
+            UserId = currentUser.UserId.Value,
+            TenantId = effectiveTenantId,
+            Scope = isPlatformScope ? "platform" : "tenant",
+            IsPlatformUser = currentUser.IsPlatformUser,
+            Roles = roles,
+            Permissions = permissions
+        };
+
         return Ok(ApiResponse<object>.Ok(data, ApiResultMapper.GetCorrelationId(HttpContext)));
     }
 }

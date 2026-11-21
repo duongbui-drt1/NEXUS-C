@@ -19,6 +19,7 @@ public interface ITenantAccessValidator
 {
     Task<TenantAccessInfo?> ValidateMembershipAsync(Guid userId, Guid tenantId, CancellationToken ct = default);
     Task<IReadOnlyList<Guid>> GetAccessibleTenantIdsAsync(Guid userId, CancellationToken ct = default);
+    Task<IReadOnlyList<Guid>> GetMemberUserIdsAsync(Guid tenantId, CancellationToken ct = default);
     Task<bool> EnsureMembershipAsync(Guid userId, Guid tenantId, CancellationToken ct = default);
     Task<bool> RevokeMembershipAsync(Guid userId, Guid tenantId, CancellationToken ct = default);
 }
@@ -27,6 +28,7 @@ public interface IPermissionEvaluator
 {
     Task<bool> HasPermissionAsync(Guid userId, Guid? tenantId, string permissionCode, bool isPlatformScope, CancellationToken ct = default);
     Task<IReadOnlyList<string>> GetPermissionsAsync(Guid userId, Guid? tenantId, bool isPlatformScope, CancellationToken ct = default);
+    Task<IReadOnlyList<string>> GetRoleNamesAsync(Guid userId, Guid? tenantId, bool isPlatformScope, CancellationToken ct = default);
     Task AssignRoleByNameAsync(Guid userId, Guid? tenantId, string roleName, CancellationToken ct = default);
 }
 

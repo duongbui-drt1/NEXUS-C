@@ -150,7 +150,8 @@ public sealed class DatabaseAndRlsIntegrationTests(NexusPostgresFixture fixture)
         for (var i = 0; i < 12; i++)
         {
             var tenantCtx = new Nexus.BuildingBlocks.Context.AmbientTenantContext();
-            var connInt = new TenantRlsInterceptor(tenantCtx);
+            var stubUser = new StubCurrentUser();
+            var connInt = new TenantRlsInterceptor(tenantCtx, stubUser);
             var txInt = new TenantRlsTransactionInterceptor(connInt);
             var cmdInt = new TenantRlsCommandInterceptor(connInt);
 

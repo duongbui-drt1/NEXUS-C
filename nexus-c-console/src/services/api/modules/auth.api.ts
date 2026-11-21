@@ -1,4 +1,10 @@
-import type { AuthTokenResponse, CurrentUserMe, LoginRequest, SessionDto } from '../../../types/api';
+import type {
+  AuthTokenResponse,
+  CurrentUserMe,
+  EffectivePermissionsResponse,
+  LoginRequest,
+  SessionDto,
+} from '../../../types/api';
 import { apiRequest } from '../client';
 
 export const authApi = {
@@ -12,6 +18,9 @@ export const authApi = {
   logout: () => apiRequest<void>('/api/v1/auth/logout', { method: 'POST' }),
 
   me: (signal?: AbortSignal) => apiRequest<CurrentUserMe>('/api/v1/auth/me', { signal }),
+
+  effectivePermissions: (signal?: AbortSignal) =>
+    apiRequest<EffectivePermissionsResponse>('/api/v1/auth/permissions', { signal }),
 
   switchTenant: (tenantId: string) =>
     apiRequest<AuthTokenResponse>('/api/v1/auth/switch-tenant', {
