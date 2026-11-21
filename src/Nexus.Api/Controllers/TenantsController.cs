@@ -10,7 +10,10 @@ namespace Nexus.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/platform/tenants")]
-public sealed class TenantsController(ITenantService tenantService, ICurrentUser currentUser) : ControllerBase
+public sealed class TenantsController(
+    ITenantService tenantService,
+    ICurrentUser currentUser,
+    ITenantContext tenantContext) : ControllerBase
 {
     [HttpPost]
     [RequirePermission(Permissions.TenantsCreate)]
@@ -61,10 +64,32 @@ public sealed class TenantsController(ITenantService tenantService, ICurrentUser
     [HttpPost("{tenantId:guid}/memberships/{userId:guid}")]
     [RequirePermission(Permissions.UsersManage)]
     public async Task<IActionResult> AddMembership(Guid tenantId, Guid userId, CancellationToken ct)
-        => (await tenantService.AddMembershipAsync(tenantId, userId, ct)).ToActionResult(HttpContext, StatusCodes.Status201Created);
+    {
+        if (!currentUser.IsPlatformUser && (!tenantContext.HasTenant || tenantContext.TenantId!.Value != tenantId))
+        {
+            return ApiResultMapper.ToProblemResult(
+                Nexus.SharedKernel.Results.Error.Forbidden(
+                    "TENANT_MEMBERSHIP_SCOPE_VIOLATION",
+                    "Tenant administrators cannot grant memberships in another tenant."),
+                HttpContext);
+        }
+
+        return (await tenantService.AddMembershipAsync(tenantId, userId, ct)).ToActionResult(HttpContext, StatusCodes.Status201Created);
+    }
 
     [HttpDelete("{tenantId:guid}/memberships/{userId:guid}")]
     [RequirePermission(Permissions.UsersManage)]
     public async Task<IActionResult> RevokeMembership(Guid tenantId, Guid userId, CancellationToken ct)
-        => (await tenantService.RevokeMembershipAsync(tenantId, userId, ct)).ToActionResult(HttpContext);
+    {
+        if (!currentUser.IsPlatformUser && (!tenantContext.HasTenant || tenantContext.TenantId!.Value != tenantId))
+        {
+            return ApiResultMapper.ToProblemResult(
+                Nexus.SharedKernel.Results.Error.Forbidden(
+                    "TENANT_MEMBERSHIP_SCOPE_VIOLATION",
+                    "Tenant administrators cannot revoke memberships in another tenant."),
+                HttpContext);
+        }
+
+        return (await tenantService.RevokeMembershipAsync(tenantId, userId, ct)).ToActionResult(HttpContext);
+    }
 }

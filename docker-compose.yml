@@ -5,19 +5,38 @@ services:
     image: postgres:17.4-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-nexus_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-nexus}
       POSTGRES_USER: ${POSTGRES_ADMIN_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD in .env}
+      POSTGRES_MIGRATOR_PASSWORD: ${POSTGRES_MIGRATOR_PASSWORD:?Set POSTGRES_MIGRATOR_PASSWORD in .env}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD in .env}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - nexus_pg_data:/var/lib/postgresql/data
-      - ./infrastructure/database/init-roles.sql:/docker-entrypoint-initdb.d/01-init-roles.sql:ro
+      - ./infrastructure/database/init-roles.sh:/docker-entrypoint-initdb.d/01-init-roles.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_ADMIN_USER:-postgres} -d ${POSTGRES_DB:-nexus_dev}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_ADMIN_USER:-postgres} -d ${POSTGRES_DB:-nexus}"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - nexus_internal
+
+  migrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.migrator
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__MigrationConnection: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-nexus};Username=nexus_migrator;Password=${POSTGRES_MIGRATOR_PASSWORD:?Set POSTGRES_MIGRATOR_PASSWORD}"
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-nexus};Username=nexus_app;Password=${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD}"
+      NEXUS_APP_DB_ROLE: "nexus_app"
+      NEXUS_BOOTSTRAP_ADMIN_EMAIL: ${NEXUS_BOOTSTRAP_ADMIN_EMAIL:-}
+      NEXUS_BOOTSTRAP_ADMIN_PASSWORD: ${NEXUS_BOOTSTRAP_ADMIN_PASSWORD:-}
     networks:
       - nexus_internal
 
@@ -82,8 +101,8 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       rabbitmq:
@@ -92,8 +111,8 @@ services:
         condition: service_healthy
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
-      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-nexus_dev};Username=nexus_app;Password=${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD}"
-      ConnectionStrings__MigrationConnection: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-nexus_dev};Username=nexus_migrator;Password=${POSTGRES_MIGRATOR_PASSWORD:?Set POSTGRES_MIGRATOR_PASSWORD}"
+      # API runtime receives ONLY the least-privilege nexus_app role (never migrator or bootstrap admin credentials)
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-nexus};Username=nexus_app;Password=${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD}"
       ConnectionStrings__Redis: "redis:6379,password=${REDIS_PASSWORD}"
       Jwt__Issuer: ${JWT_ISSUER:-https://nexus-c.local}
       Jwt__Audience: ${JWT_AUDIENCE:-nexus-ecosystem}
@@ -109,6 +128,7 @@ services:
       ObjectStorage__SecretKey: ${S3_SECRET_KEY}
       ObjectStorage__SigningSecret: ${OBJECT_STORAGE_SIGNING_SECRET:?Set OBJECT_STORAGE_SIGNING_SECRET}
       OpenApi__Enabled: ${OPENAPI_ENABLED:-false}
+      Cors__AllowedOrigins__0: ${CORS_ALLOWED_ORIGIN:-https://console.nexus.local}
     ports:
       - "127.0.0.1:${API_PORT:-8080}:8080"
     healthcheck:

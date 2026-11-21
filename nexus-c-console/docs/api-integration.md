@@ -21,7 +21,8 @@
 | List My Sessions | `GET /api/v1/auth/sessions` | Bearer JWT | Available |
 | Revoke My Session | `DELETE /api/v1/auth/sessions/{sessionId}` | Bearer JWT | Available |
 | Current Principal | `GET /api/v1/auth/me` | Bearer JWT | Available |
-| HttpOnly Cookie Refresh | — | — | **Missing** (Backend currently returns JSON tokens; Console stores tokens in memory only — never `localStorage`) |
+| Effective Permissions (Fail-Closed Hydration) | `GET /api/v1/auth/permissions` | Bearer JWT | Available |
+| HttpOnly Cookie Refresh | — | — | **Missing** (Tracked in `docs/architecture/ADR-002-CONSOLE-SESSION-STORAGE.md`) |
 
 ---
 

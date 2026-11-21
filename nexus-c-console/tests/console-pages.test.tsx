@@ -23,7 +23,7 @@ function renderAt(initialRoute: string) {
   );
 }
 
-describe('NEXUS C Console — Auth, RBAC, Tenants, API Management & Audit UI', () => {
+describe('NEXUS C Console — Auth, Fail-Closed RBAC, Tenants, API Management & Audit UI', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     tokenStore.clear();
@@ -44,6 +44,73 @@ describe('NEXUS C Console — Auth, RBAC, Tenants, API Management & Audit UI', (
     await user.click(screen.getByRole('button', { name: 'Đăng nhập' }));
 
     expect(await screen.findByText('Invalid email or password.')).toBeInTheDocument();
+  });
+
+  it('enforces STRICT FAIL-CLOSED when GET /api/v1/auth/permissions fails (never grants implicit access)', async () => {
+    tokenStore.setFromAuthResponse({
+      accessToken: 'admin-jwt',
+      accessTokenExpiresAt: new Date(Date.now() + 900_000).toISOString(),
+      refreshToken: 'admin-refresh',
+      refreshTokenExpiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      userId: 'u-admin',
+      email: 'admin@nexus.local',
+      tenantId: null,
+      scope: 'platform',
+      sessionId: 'sess-1',
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/api/v1/auth/permissions')) {
+        return jsonRes({ status: 500, errorCode: 'INTERNAL_SERVER_ERROR', detail: 'DB unavailable' }, 500);
+      }
+      return jsonRes({ success: true, data: [], meta: { correlationId: 'c1' } });
+    });
+
+    renderAt('/core/tenants');
+
+    expect(await screen.findByText(/Không thể tải danh sách quyền từ máy chủ \(Fail-Closed\)/i)).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Tenants' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'API Management' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Events & Jobs' })).not.toBeInTheDocument();
+  });
+
+  it('denies /api-management and /operations when user lacks platform.api.read / platform.operations.read', async () => {
+    tokenStore.setFromAuthResponse({
+      accessToken: 'emp-jwt',
+      accessTokenExpiresAt: new Date(Date.now() + 900_000).toISOString(),
+      refreshToken: 'emp-refresh',
+      refreshTokenExpiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      userId: 'u-emp',
+      email: 'employee@acme.vn',
+      tenantId: 't-acme',
+      scope: 'tenant',
+      sessionId: 'sess-e',
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/api/v1/auth/permissions')) {
+        return jsonRes({
+          success: true,
+          data: {
+            userId: 'u-emp',
+            tenantId: 't-acme',
+            scope: 'tenant',
+            isPlatformUser: false,
+            roles: ['Employee'],
+            permissions: ['platform.organizations.read', 'platform.notifications.read'],
+          },
+          meta: { correlationId: 'c-perm' },
+        });
+      }
+      return jsonRes({ success: true, data: [], meta: { correlationId: 'c2' } });
+    });
+
+    renderAt('/api-management');
+    expect(await screen.findByText(/Bạn không có quyền/i)).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'API Management' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Events & Jobs' })).not.toBeInTheDocument();
   });
 
   it('logs in Platform SuperAdmin, renders Tenants list with search & suspend confirmation, and logs out', async () => {
@@ -70,40 +137,34 @@ describe('NEXUS C Console — Auth, RBAC, Tenants, API Management & Audit UI', (
           meta: { correlationId: 'c1' },
         });
       }
+      if (url.endsWith('/api/v1/auth/permissions')) {
+        return jsonRes({
+          success: true,
+          data: {
+            userId: 'u-admin',
+            tenantId: null,
+            scope: 'platform',
+            isPlatformUser: true,
+            roles: ['PlatformSuperAdmin'],
+            permissions: [
+              'platform.tenants.read',
+              'platform.tenants.create',
+              'platform.tenants.update',
+              'platform.tenants.suspend',
+              'platform.memberships.manage',
+              'platform.users.read',
+              'platform.audit.read',
+              'platform.configuration.read',
+              'platform.api.read',
+              'platform.operations.read',
+            ],
+          },
+          meta: { correlationId: 'c-perm' },
+        });
+      }
       if (url.endsWith('/api/v1/auth/logout')) return new Response(null, { status: 204 });
       if (url.endsWith('/health/live') || url.endsWith('/health/ready')) return new Response('Healthy', { status: 200 });
       if (url.includes('/api/v1/platform/tenants/accessible')) return jsonRes({ success: true, data: [], meta: { correlationId: 'c2' } });
-      if (url.includes('/api/v1/platform/roles/users/')) {
-        return jsonRes({
-          success: true,
-          data: [{ id: 'ur-1', userId: 'u-admin', roleId: 'r-super', roleName: 'PlatformSuperAdmin', tenantId: null, scope: 'Platform' }],
-          meta: { correlationId: 'c3' },
-        });
-      }
-      if (url.endsWith('/api/v1/platform/roles')) {
-        return jsonRes({
-          success: true,
-          data: [
-            {
-              id: 'r-super',
-              name: 'PlatformSuperAdmin',
-              scope: 'Platform',
-              isSystemRole: true,
-              description: 'Super Admin',
-              permissions: [
-                'platform.tenants.read',
-                'platform.tenants.create',
-                'platform.tenants.update',
-                'platform.tenants.suspend',
-                'platform.users.read',
-                'platform.audit.read',
-                'platform.configuration.read',
-              ],
-            },
-          ],
-          meta: { correlationId: 'c4' },
-        });
-      }
       if (url.includes('/suspend') && method === 'POST') {
         suspendSpy(init?.body);
         return jsonRes({
@@ -144,7 +205,11 @@ describe('NEXUS C Console — Auth, RBAC, Tenants, API Management & Audit UI', (
         });
       }
       if (url.includes('/api/v1/platform/configuration/feature-flags')) {
-        return jsonRes({ success: true, data: [{ key: 'new_ui', isEnabled: true, description: null, version: 1, isTenantOverride: false }], meta: { correlationId: 'c6b' } });
+        return jsonRes({
+          success: true,
+          data: [{ key: 'new_ui', isEnabled: true, description: null, version: 1, isTenantOverride: false }],
+          meta: { correlationId: 'c6b' },
+        });
       }
       return jsonRes({ success: true, data: { items: [], page: 1, pageSize: 10, totalCount: 0, totalPages: 0 }, meta: { correlationId: 'c7' } });
     });
@@ -156,14 +221,11 @@ describe('NEXUS C Console — Auth, RBAC, Tenants, API Management & Audit UI', (
     await user.type(screen.getByLabelText('Mật khẩu'), 'SuperAdmin!2026#');
     await user.click(screen.getByRole('button', { name: 'Đăng nhập' }));
 
-    // Landed on Overview
     expect(await screen.findByText('Tổng quan Nền tảng (NEXUS C)')).toBeInTheDocument();
 
-    // Navigate to Tenants
     await user.click(screen.getByRole('link', { name: 'Tenants' }));
     expect(await screen.findByText('Công ty Cổ phần ACME Việt Nam')).toBeInTheDocument();
 
-    // Open Suspend confirmation dialog
     await user.click(screen.getByRole('button', { name: 'Tạm ngưng' }));
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
 
@@ -172,7 +234,6 @@ describe('NEXUS C Console — Auth, RBAC, Tenants, API Management & Audit UI', (
 
     await waitFor(() => expect(suspendSpy).toHaveBeenCalledTimes(1));
 
-    // Logout
     await user.click(screen.getByRole('button', { name: 'Đăng xuất' }));
     expect(await screen.findByRole('button', { name: 'Đăng nhập' })).toBeInTheDocument();
   });
@@ -188,6 +249,25 @@ describe('NEXUS C Console — Auth, RBAC, Tenants, API Management & Audit UI', (
       tenantId: 't-acme',
       scope: 'tenant',
       sessionId: 'sess-t',
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/api/v1/auth/permissions')) {
+        return jsonRes({
+          success: true,
+          data: {
+            userId: 'u-tenant',
+            tenantId: 't-acme',
+            scope: 'tenant',
+            isPlatformUser: false,
+            roles: ['TenantAdmin'],
+            permissions: ['platform.organizations.read', 'platform.users.manage', 'platform.api.read'],
+          },
+          meta: { correlationId: 'c-perm' },
+        });
+      }
+      return jsonRes({ success: true, data: [], meta: { correlationId: 'c2' } });
     });
 
     renderAt('/core/tenants');
@@ -211,6 +291,23 @@ describe('NEXUS C Console — Auth, RBAC, Tenants, API Management & Audit UI', (
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
+      if (url.endsWith('/api/v1/auth/permissions')) {
+        return jsonRes({
+          success: true,
+          data: {
+            userId: 'u-admin',
+            tenantId: null,
+            scope: 'platform',
+            isPlatformUser: true,
+            roles: ['PlatformSuperAdmin'],
+            permissions: ['platform.api.read', 'platform.operations.read'],
+          },
+          meta: { correlationId: 'c-perm' },
+        });
+      }
+      if (url.includes('/api/v1/platform/tenants/accessible')) {
+        return jsonRes({ success: true, data: [], meta: { correlationId: 'c-acc' } });
+      }
       if (url.endsWith('/openapi/v1.json')) {
         return jsonRes({
           openapi: '3.1.1',
@@ -230,7 +327,6 @@ describe('NEXUS C Console — Auth, RBAC, Tenants, API Management & Audit UI', (
 
     expect(await screen.findByText('/api/v1/platform/tenants')).toBeInTheDocument();
 
-    // Switch to API Keys tab -> honest Not Available state, zero fake buttons
     await user.click(screen.getByRole('tab', { name: 'API Keys' }));
     expect(await screen.findByText('API Keys Management')).toBeInTheDocument();
     expect(screen.getByText('Not Available')).toBeInTheDocument();
@@ -249,39 +345,57 @@ describe('NEXUS C Console — Auth, RBAC, Tenants, API Management & Audit UI', (
       sessionId: 'sess-1',
     });
 
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      jsonRes({
-        success: true,
-        data: {
-          items: [
-            {
-              id: 'aud-1',
-              actorUserId: 'u-1',
-              actorEmail: 'admin@nexus.local',
-              tenantId: null,
-              action: 'platform.tenant.create',
-              resourceType: 'Tenant',
-              resourceId: 't-1',
-              occurredAt: '2026-11-21T12:00:00Z',
-              ipAddress: '127.0.0.1',
-              correlationId: 'corr-xyz',
-              result: 'Success',
-              reason: null,
-              beforeMetadataJson: null,
-              afterMetadataJson: '{"code":"ACME"}',
-              isCrossTenantPlatformAccess: false,
-            },
-          ],
-          page: 1,
-          pageSize: 20,
-          totalCount: 1,
-          totalPages: 1,
-          hasNext: false,
-          hasPrevious: false,
-        },
-        meta: { correlationId: 'c-aud' },
-      }),
-    );
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/api/v1/auth/permissions')) {
+        return jsonRes({
+          success: true,
+          data: {
+            userId: 'u-admin',
+            tenantId: null,
+            scope: 'platform',
+            isPlatformUser: true,
+            roles: ['Auditor'],
+            permissions: ['platform.audit.read'],
+          },
+          meta: { correlationId: 'c-perm' },
+        });
+      }
+      if (url.includes('/api/v1/platform/audit')) {
+        return jsonRes({
+          success: true,
+          data: {
+            items: [
+              {
+                id: 'aud-1',
+                actorUserId: 'u-1',
+                actorEmail: 'admin@nexus.local',
+                tenantId: null,
+                action: 'platform.tenant.create',
+                resourceType: 'Tenant',
+                resourceId: 't-1',
+                occurredAt: '2026-11-21T12:00:00Z',
+                ipAddress: '127.0.0.1',
+                correlationId: 'corr-xyz',
+                result: 'Success',
+                reason: null,
+                beforeMetadataJson: null,
+                afterMetadataJson: '{"code":"ACME"}',
+                isCrossTenantPlatformAccess: false,
+              },
+            ],
+            page: 1,
+            pageSize: 20,
+            totalCount: 1,
+            totalPages: 1,
+            hasNext: false,
+            hasPrevious: false,
+          },
+          meta: { correlationId: 'c-aud' },
+        });
+      }
+      return jsonRes({ success: true, data: [], meta: { correlationId: 'c-empty' } });
+    });
 
     renderAt('/audit');
 

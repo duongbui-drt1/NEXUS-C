@@ -6,6 +6,7 @@ using Nexus.SharedKernel.Contracts;
 using Nexus.SharedKernel.Events;
 using Nexus.SharedKernel.Pagination;
 using Nexus.SharedKernel.Results;
+using Nexus.SharedKernel.Security;
 
 namespace Nexus.Modules.Tenancy.Application;
 
@@ -65,6 +66,9 @@ public interface ITenantService
 public sealed class TenantService(
     TenancyDbContext db,
     ITenantContext tenantContext,
+    ICurrentUser currentUser,
+    IPermissionEvaluator permissionEvaluator,
+    IUserDirectoryReader userDirectory,
     ICorrelationContext correlationContext,
     ISystemClock clock,
     IAuditWriter auditWriter) : ITenantService
@@ -274,12 +278,80 @@ public sealed class TenantService(
         return Map(tenant);
     }
 
+    private async Task<Result> AuthorizeMembershipManagementAsync(Guid targetTenantId, CancellationToken ct)
+    {
+        if (!currentUser.IsAuthenticated || !currentUser.UserId.HasValue)
+        {
+            return Result.Failure(Error.Unauthorized("AUTH_REQUIRED", "Authentication is required to manage tenant memberships."));
+        }
+
+        if (currentUser.IsPlatformUser)
+        {
+            var canManageCrossTenant = await permissionEvaluator.HasPermissionAsync(
+                currentUser.UserId.Value,
+                null,
+                Permissions.MembershipsManageCrossTenant,
+                isPlatformScope: true,
+                ct);
+
+            if (!canManageCrossTenant)
+            {
+                return Result.Failure(Error.Forbidden(
+                    "MEMBERSHIP_CROSS_TENANT_DENIED",
+                    "Cross-tenant membership management requires the platform.memberships.manage permission."));
+            }
+
+            return Result.Success();
+        }
+
+        // Tenant-scoped actor: MUST operate strictly inside their own authenticated tenant context!
+        if (!tenantContext.HasTenant || tenantContext.TenantId!.Value != targetTenantId)
+        {
+            return Result.Failure(Error.Forbidden(
+                "TENANT_MEMBERSHIP_SCOPE_VIOLATION",
+                "Tenant administrators can only manage memberships within their own authenticated tenant."));
+        }
+
+        var canManageLocalUsers = await permissionEvaluator.HasPermissionAsync(
+            currentUser.UserId.Value,
+            targetTenantId,
+            Permissions.UsersManage,
+            isPlatformScope: false,
+            ct);
+
+        if (!canManageLocalUsers)
+        {
+            return Result.Failure(Error.Forbidden(
+                "MEMBERSHIP_PERMISSION_DENIED",
+                "Caller lacks platform.users.manage permission in the target tenant."));
+        }
+
+        return Result.Success();
+    }
+
     public async Task<Result<MembershipDto>> AddMembershipAsync(Guid tenantId, Guid userId, CancellationToken ct = default)
     {
-        var tenantExists = await db.Tenants.AsNoTracking().AnyAsync(t => t.Id == tenantId, ct);
-        if (!tenantExists)
+        var authz = await AuthorizeMembershipManagementAsync(tenantId, ct);
+        if (authz.IsFailure)
+        {
+            return Result.Failure<MembershipDto>(authz.Error);
+        }
+
+        var tenant = await db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tenantId, ct);
+        if (tenant is null)
         {
             return Error.NotFound("TENANT_NOT_FOUND", $"Tenant '{tenantId}' was not found.");
+        }
+
+        if (tenant.Status == TenantLifecycleStatus.Archived)
+        {
+            return Error.BusinessRule("TENANT_ARCHIVED", "Cannot grant membership in an archived tenant.");
+        }
+
+        var targetUser = await userDirectory.GetByIdAsync(userId, ct);
+        if (targetUser is null)
+        {
+            return Error.NotFound("USER_NOT_FOUND", $"User '{userId}' was not found.");
         }
 
         using var scope = tenantContext.BeginScope(tenantId);
@@ -293,6 +365,16 @@ public sealed class TenantService(
 
             existing.Activate(clock.UtcNow);
             await db.SaveChangesAsync(ct);
+
+            await auditWriter.WriteAsync(new AuditEntryRequest(
+                Action: "platform.membership.grant",
+                ResourceType: "UserTenantMembership",
+                ResourceId: existing.Id.ToString("D"),
+                TenantId: tenantId,
+                Result: "Success",
+                AfterState: new { existing.UserId, existing.TenantId, Status = existing.Status.ToString() },
+                IsCrossTenantPlatformAccess: currentUser.IsPlatformUser), ct);
+
             return Map(existing);
         }
 
@@ -306,13 +388,37 @@ public sealed class TenantService(
             ResourceId: membership.Id.ToString("D"),
             TenantId: tenantId,
             Result: "Success",
-            AfterState: new { membership.UserId, membership.TenantId, Status = membership.Status.ToString() }), ct);
+            AfterState: new { membership.UserId, membership.TenantId, Status = membership.Status.ToString() },
+            IsCrossTenantPlatformAccess: currentUser.IsPlatformUser), ct);
 
         return Map(membership);
     }
 
     public async Task<Result> RevokeMembershipAsync(Guid tenantId, Guid userId, CancellationToken ct = default)
     {
+        var authz = await AuthorizeMembershipManagementAsync(tenantId, ct);
+        if (authz.IsFailure)
+        {
+            return authz;
+        }
+
+        var tenant = await db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tenantId, ct);
+        if (tenant is null)
+        {
+            return Result.Failure(Error.NotFound("TENANT_NOT_FOUND", $"Tenant '{tenantId}' was not found."));
+        }
+
+        if (tenant.Status == TenantLifecycleStatus.Archived)
+        {
+            return Result.Failure(Error.BusinessRule("TENANT_ARCHIVED", "Cannot modify memberships of an archived tenant."));
+        }
+
+        var targetUser = await userDirectory.GetByIdAsync(userId, ct);
+        if (targetUser is null)
+        {
+            return Result.Failure(Error.NotFound("USER_NOT_FOUND", $"User '{userId}' was not found."));
+        }
+
         using var scope = tenantContext.BeginScope(tenantId);
         var existing = await db.Memberships.FirstOrDefaultAsync(m => m.UserId == userId && m.TenantId == tenantId, ct);
         if (existing is null)
@@ -329,7 +435,8 @@ public sealed class TenantService(
             ResourceId: existing.Id.ToString("D"),
             TenantId: tenantId,
             Result: "Success",
-            AfterState: new { existing.UserId, existing.TenantId, Status = existing.Status.ToString() }), ct);
+            AfterState: new { existing.UserId, existing.TenantId, Status = existing.Status.ToString() },
+            IsCrossTenantPlatformAccess: currentUser.IsPlatformUser), ct);
 
         return Result.Success();
     }
@@ -392,6 +499,15 @@ public sealed class TenantAccessValidator(
         return await db.Memberships.AsNoTracking()
             .Where(m => m.UserId == userId && m.Status == MembershipStatus.Active)
             .Select(m => m.TenantId)
+            .ToListAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<Guid>> GetMemberUserIdsAsync(Guid tenantId, CancellationToken ct = default)
+    {
+        using var scope = tenantContext.BeginScope(tenantId, platformBypass: false);
+        return await db.Memberships.AsNoTracking()
+            .Where(m => m.TenantId == tenantId && m.Status == MembershipStatus.Active)
+            .Select(m => m.UserId)
             .ToListAsync(ct);
     }
 

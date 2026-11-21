@@ -1,0 +1,11 @@
+# NEXUS C Foundation — 7-Phase Repair Plan
+
+| Phase | Target Findings | Concrete Engineering Actions |
+|---|---|---|
+| **Phase 01** | Audit & Baseline | Branch `fix/nexus-foundation-hardening`, run backend & frontend baseline, author `BASELINE-REPORT.md`, `FINDINGS.md`, `REPAIR-PLAN.md` |
+| **Phase 02** | **F-01, F-02** (P0 Critical) | Add `platform.memberships.manage` (PlatformSuperAdmin only); enforce server-side tenant scope & target existence in `TenantService`, `AuthService`, and `AccessControlService`; add comprehensive service, API & security regression tests |
+| **Phase 03** | **F-03** (P1 High) | Add `app.is_platform_scope` GUC to `TenantRlsInterceptor`; implement hybrid PostgreSQL `FORCE ROW LEVEL SECURITY` on `access_control.roles`, `access_control.user_roles`, and `configuration.feature_flags`; add EF Core SaveChanges guards; audit all `platformBypass: true` call sites; verify with raw SQL tests as `nexus_app` |
+| **Phase 04** | **F-04** (P1 High) | Replace hardcoded `init-roles.sql` in Docker with env-driven safe `init-roles.sh` (`psql -v` + `ALTER DEFAULT PRIVILEGES`); add dedicated `src/Nexus.Migrator` one-shot project + `Dockerfile.migrator` + Compose dependency ordering; add Production startup secret/CORS fail-fast validation; audit bootstrap admin creation |
+| **Phase 05** | **F-05** (P1 High) | Add backend `GET /api/v1/auth/permissions` + `platform.api.*` & `platform.operations.*` permissions; refactor `AuthContext` to strict fail-closed `PermissionStatus` (`idle`/`loading`/`loaded`/`failed`); protect `/api-management/*` & `/operations`; write `ADR-002-CONSOLE-SESSION-STORAGE.md`; add frontend fail-closed security tests |
+| **Phase 06** | **F-06, F-07** (P1 High) | Add server-side SSRF URL protection to `WebhookRegistration.Create`; add `frontend-ci` job & `Nexus.Migrator` build to `.github/workflows/ci.yml`; add reliability tests (readiness 503 when PostgreSQL unreachable while liveness stays 200) |
+| **Phase 07** | Release Gate | Run full backend (`restore`, `format`, `build -c Release`, `test -c Release`), full frontend (`npm ci`, `typecheck`, `lint`, `test`, `build`), clean-DB migrator E2E drill, and author all remaining `docs/hardening/*` reports |

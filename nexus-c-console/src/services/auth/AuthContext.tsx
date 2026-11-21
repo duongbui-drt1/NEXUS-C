@@ -5,12 +5,14 @@ import type { AuthTokenResponse, LoginRequest, TenantDto } from '../../types/api
 import { registerUnauthorizedHandler } from '../api/client';
 import { authApi } from '../api/modules/auth.api';
 import { tenantsApi } from '../api/modules/tenants.api';
-import { accessControlApi } from '../api/modules/users.api';
 import { tokenStore } from './tokenStore';
+
+export type PermissionStatus = 'idle' | 'loading' | 'loaded' | 'failed';
 
 export interface AuthState {
   isAuthenticated: boolean;
   isLoading: boolean;
+  permissionStatus: PermissionStatus;
   userId: string | null;
   email: string | null;
   tenantId: string | null;
@@ -23,21 +25,58 @@ export interface AuthState {
   login: (req: LoginRequest) => Promise<AuthTokenResponse>;
   logout: () => Promise<void>;
   switchTenant: (tenantId: string) => Promise<void>;
+  reloadPermissions: () => Promise<void>;
   hasPermission: (permission: string) => boolean;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
 
+async function fetchMetadataSnapshot(): Promise<{
+  tenants: TenantDto[];
+  roles: string[];
+  permissions: string[];
+  status: 'loaded' | 'failed';
+}> {
+  const [permRes, tenantsRes] = await Promise.allSettled([
+    authApi.effectivePermissions(),
+    tenantsApi.listAccessible(),
+  ]);
+
+  const tenants =
+    tenantsRes.status === 'fulfilled' && Array.isArray(tenantsRes.value) ? tenantsRes.value : [];
+
+  if (permRes.status === 'fulfilled') {
+    return {
+      tenants,
+      roles: Array.isArray(permRes.value.roles) ? permRes.value.roles : [],
+      permissions: Array.isArray(permRes.value.permissions) ? permRes.value.permissions : [],
+      status: 'loaded',
+    };
+  }
+
+  // STRICT FAIL-CLOSED: failed permission fetch grants ZERO permissions
+  return {
+    tenants,
+    roles: [],
+    permissions: [],
+    status: 'failed',
+  };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [session, setSession] = useState(() => tokenStore.getSession());
   const [isLoading, setIsLoading] = useState(false);
+  const [permissionStatus, setPermissionStatus] = useState<PermissionStatus>(() =>
+    tokenStore.getSession() ? 'loading' : 'idle',
+  );
   const [permissions, setPermissions] = useState<string[]>([]);
   const [roles, setRoles] = useState<string[]>([]);
   const [accessibleTenants, setAccessibleTenants] = useState<TenantDto[]>([]);
 
   const resetAuthContext = useCallback(() => {
     setSession(null);
+    setPermissionStatus('idle');
     setPermissions([]);
     setRoles([]);
     setAccessibleTenants([]);
@@ -53,40 +92,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, [resetAuthContext]);
 
-  const hydrateUserMetadata = useCallback(async (userId: string) => {
-    // Load accessible tenants & user roles for UX navigation gating (backend remains sole authority!)
-    const [tenantsRes, userRolesRes, allRolesRes] = await Promise.allSettled([
-      tenantsApi.listAccessible(),
-      accessControlApi.listUserRoles(userId),
-      accessControlApi.listRoles(),
-    ]);
-
-    if (tenantsRes.status === 'fulfilled') {
-      setAccessibleTenants(tenantsRes.value);
-    } else {
-      setAccessibleTenants([]);
-    }
-
-    if (userRolesRes.status === 'fulfilled') {
-      const assignedRoleIds = new Set(userRolesRes.value.map((r) => r.roleId));
-      setRoles(userRolesRes.value.map((r) => r.roleName));
-
-      if (allRolesRes.status === 'fulfilled') {
-        const permSet = new Set<string>();
-        for (const role of allRolesRes.value) {
-          if (assignedRoleIds.has(role.id)) {
-            for (const p of role.permissions) permSet.add(p);
-          }
-        }
-        setPermissions(Array.from(permSet));
-      } else {
-        setPermissions([]);
-      }
-    } else {
-      setRoles([]);
-      setPermissions([]);
-    }
+  const hydrateUserMetadata = useCallback(async () => {
+    setPermissionStatus('loading');
+    const snap = await fetchMetadataSnapshot();
+    setAccessibleTenants(snap.tenants);
+    setRoles(snap.roles);
+    setPermissions(snap.permissions);
+    setPermissionStatus(snap.status);
   }, []);
+
+  // Hydrate permissions asynchronously if an in-memory session already existed on mount
+  useEffect(() => {
+    if (!session || permissionStatus !== 'loading') return;
+    let cancelled = false;
+    void fetchMetadataSnapshot().then((snap) => {
+      if (cancelled) return;
+      setAccessibleTenants(snap.tenants);
+      setRoles(snap.roles);
+      setPermissions(snap.permissions);
+      setPermissionStatus(snap.status);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [session, permissionStatus]);
 
   const login = useCallback(
     async (req: LoginRequest): Promise<AuthTokenResponse> => {
@@ -95,7 +124,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const resp = await authApi.login(req);
         tokenStore.setFromAuthResponse(resp);
         setSession(tokenStore.getSession());
-        await hydrateUserMetadata(resp.userId);
+        await hydrateUserMetadata();
         return resp;
       } finally {
         setIsLoading(false);
@@ -125,7 +154,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         tokenStore.setFromAuthResponse(resp);
         setSession(tokenStore.getSession());
         queryClient.clear();
-        await hydrateUserMetadata(resp.userId);
+        await hydrateUserMetadata();
       } finally {
         setIsLoading(false);
       }
@@ -133,26 +162,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [hydrateUserMetadata, queryClient],
   );
 
+  /**
+   * STRICT FAIL-CLOSED permission check (UX layer only; backend authorization remains authoritative):
+   * - No session -> false
+   * - Loading / Failed / Idle -> false
+   * - Loaded with empty permissions -> false
+   */
   const hasPermission = useCallback(
     (permission: string): boolean => {
-      if (!session) return false;
-      // If permissions were resolved from backend role catalog, enforce them strictly for UX gating
-      if (permissions.length > 0) {
-        return permissions.includes(permission);
+      if (!session || permissionStatus !== 'loaded') {
+        return false;
       }
-      // Fallback when user doesn't hold platform.roles.read: gate platform-only routes by scope; backend enforces actual 403
-      if (permission.startsWith('platform.tenants.') || permission === 'platform.subscriptions.manage') {
-        return session.scope === 'platform';
-      }
-      return true;
+      return permissions.includes(permission);
     },
-    [permissions, session],
+    [permissions, permissionStatus, session],
   );
 
   const value = useMemo<AuthState>(
     () => ({
       isAuthenticated: session !== null,
       isLoading,
+      permissionStatus,
       userId: session?.userId ?? null,
       email: session?.email ?? null,
       tenantId: session?.tenantId ?? null,
@@ -165,9 +195,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       logout,
       switchTenant,
+      reloadPermissions: hydrateUserMetadata,
       hasPermission,
     }),
-    [session, isLoading, permissions, roles, accessibleTenants, login, logout, switchTenant, hasPermission],
+    [session, isLoading, permissionStatus, permissions, roles, accessibleTenants, login, logout, switchTenant, hydrateUserMetadata, hasPermission],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

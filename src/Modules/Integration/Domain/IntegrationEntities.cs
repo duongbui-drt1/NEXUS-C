@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using Nexus.SharedKernel.Primitives;
 using Nexus.SharedKernel.Results;
 
@@ -171,6 +173,13 @@ public sealed class WebhookRegistration : TenantScopedEntity
             return Error.Validation("WEBHOOK_INVALID_URL", "Webhook TargetUrl must be a valid HTTPS URL.");
         }
 
+        if (IsUnsafeSsrfTarget(uri))
+        {
+            return Error.Validation(
+                "WEBHOOK_UNSAFE_TARGET",
+                "Webhook TargetUrl cannot target localhost, loopback, link-local, metadata, or private internal network addresses.");
+        }
+
         if (string.IsNullOrWhiteSpace(signingSecretRef) ||
             (!signingSecretRef.StartsWith("vault://", StringComparison.OrdinalIgnoreCase) &&
              !signingSecretRef.StartsWith("env://", StringComparison.OrdinalIgnoreCase)))
@@ -188,6 +197,56 @@ public sealed class WebhookRegistration : TenantScopedEntity
         };
         wh.AssignTenant(tenantId);
         return wh;
+    }
+
+    private static bool IsUnsafeSsrfTarget(Uri uri)
+    {
+        var host = uri.DnsSafeHost.Trim().TrimEnd('.').ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(host) ||
+            host is "localhost" or "ip6-localhost" or "metadata.google.internal" ||
+            host.EndsWith(".localhost", StringComparison.Ordinal) ||
+            host.EndsWith(".local", StringComparison.Ordinal) ||
+            host.EndsWith(".internal", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (IPAddress.TryParse(host, out var ip))
+        {
+            if (ip.IsIPv4MappedToIPv6)
+            {
+                ip = ip.MapToIPv4();
+            }
+
+            if (IPAddress.IsLoopback(ip) || ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.IPv6Any))
+            {
+                return true;
+            }
+
+            var bytes = ip.GetAddressBytes();
+            if (ip.AddressFamily == AddressFamily.InterNetwork && bytes.Length == 4)
+            {
+                // 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10 (CGNAT), 127.0.0.0/8, 169.254.0.0/16 (link-local/cloud metadata),
+                // 172.16.0.0/12, 192.168.0.0/16
+                return bytes[0] == 0
+                    || bytes[0] == 10
+                    || bytes[0] == 127
+                    || (bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127)
+                    || (bytes[0] == 169 && bytes[1] == 254)
+                    || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
+                    || (bytes[0] == 192 && bytes[1] == 168);
+            }
+
+            if (ip.AddressFamily == AddressFamily.InterNetworkV6 && bytes.Length == 16)
+            {
+                // Link-local fe80::/10 or Unique Local fc00::/7
+                var isLinkLocal = bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80;
+                var isUniqueLocal = (bytes[0] & 0xFE) == 0xFC;
+                return isLinkLocal || isUniqueLocal;
+            }
+        }
+
+        return false;
     }
 }
 

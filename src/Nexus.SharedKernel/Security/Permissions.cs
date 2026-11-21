@@ -14,6 +14,13 @@ public static class Permissions
     public const string TenantsCreate = "platform.tenants.create";
     public const string TenantsUpdate = "platform.tenants.update";
     public const string TenantsSuspend = "platform.tenants.suspend";
+    public const string MembershipsManageCrossTenant = "platform.memberships.manage";
+
+    // API Management & Platform Operations
+    public const string ApiRead = "platform.api.read";
+    public const string ApiManage = "platform.api.manage";
+    public const string OperationsRead = "platform.operations.read";
+    public const string OperationsManage = "platform.operations.manage";
 
     // Organizations (Tenant-scoped)
     public const string OrganizationsRead = "platform.organizations.read";
@@ -69,6 +76,12 @@ public static class Permissions
         (TenantsCreate, "Create Tenants", PermissionScope.Platform, "Tenancy"),
         (TenantsUpdate, "Update Tenants", PermissionScope.Platform, "Tenancy"),
         (TenantsSuspend, "Suspend/Activate Tenants", PermissionScope.Platform, "Tenancy"),
+        (MembershipsManageCrossTenant, "Manage Cross-Tenant Memberships", PermissionScope.Platform, "Tenancy"),
+
+        (ApiRead, "Read API Specifications & Gateway Overview", PermissionScope.Both, "ApiManagement"),
+        (ApiManage, "Manage API Clients, Keys & Policies", PermissionScope.Platform, "ApiManagement"),
+        (OperationsRead, "Read Operations Health & Event Queues", PermissionScope.Platform, "Operations"),
+        (OperationsManage, "Manage Background Jobs & Dead Letters", PermissionScope.Platform, "Operations"),
 
         (OrganizationsRead, "Read Organization Structure", PermissionScope.Tenant, "Organization"),
         (OrganizationsManage, "Manage Legal Entities, Branches & Units", PermissionScope.Tenant, "Organization"),
