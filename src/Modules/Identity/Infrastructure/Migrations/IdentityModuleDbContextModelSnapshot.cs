@@ -233,11 +233,22 @@ namespace Nexus.Modules.Identity.Infrastructure.Migrations
                         .HasMaxLength(2000)
                         .HasColumnType("character varying(2000)");
 
+                    b.Property<string>("ApplicationCode")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<Guid?>("CreatedBy")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("CredentialClass")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("Application");
 
                     b.Property<DateTimeOffset?>("ExpiresAt")
                         .HasColumnType("timestamp with time zone");
@@ -266,6 +277,13 @@ namespace Nexus.Modules.Identity.Infrastructure.Migrations
                     b.Property<Guid?>("OwnerUserId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("PreviousKeyHash")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<DateTimeOffset?>("PreviousKeyValidUntil")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTimeOffset?>("RevokedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -274,6 +292,9 @@ namespace Nexus.Modules.Identity.Infrastructure.Migrations
                         .ValueGeneratedOnAddOrUpdate()
                         .HasColumnType("xid")
                         .HasColumnName("xmin");
+
+                    b.Property<Guid?>("ServiceClientId")
+                        .HasColumnType("uuid");
 
                     b.Property<Guid?>("TenantId")
                         .HasColumnType("uuid");
@@ -286,8 +307,12 @@ namespace Nexus.Modules.Identity.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ApplicationCode");
+
                     b.HasIndex("KeyHash")
                         .IsUnique();
+
+                    b.HasIndex("PreviousKeyHash");
 
                     b.HasIndex("TenantId");
 
@@ -560,6 +585,16 @@ namespace Nexus.Modules.Identity.Infrastructure.Migrations
                     b.Property<Guid?>("CreatedBy")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("CredentialClass")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("Application");
+
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
 
@@ -570,6 +605,17 @@ namespace Nexus.Modules.Identity.Infrastructure.Migrations
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
+
+                    b.Property<string>("PreviousSecretHash")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("PreviousSecretSalt")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<DateTimeOffset?>("PreviousSecretValidUntil")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<int>("RateLimitPerMinute")
                         .HasColumnType("integer");
@@ -606,6 +652,8 @@ namespace Nexus.Modules.Identity.Infrastructure.Migrations
                         .HasColumnType("uuid");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ApplicationCode");
 
                     b.HasIndex("ClientId")
                         .IsUnique();

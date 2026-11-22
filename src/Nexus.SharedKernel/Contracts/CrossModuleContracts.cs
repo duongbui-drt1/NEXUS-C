@@ -42,7 +42,8 @@ public sealed record AuthorizationCheckRequest(
     string PermissionCode,
     bool IsPlatformScope,
     string? ScopeType = null,
-    string? ScopeId = null);
+    string? ScopeId = null,
+    string? ApplicationCode = null);
 
 public sealed record AuthorizationDecision(
     bool Allowed,
@@ -64,7 +65,9 @@ public sealed record ServicePrincipalValidationResult(
     string? ClientId,
     Guid? BoundTenantId,
     IReadOnlyList<string> AllowedScopes,
-    string? FailureReason = null);
+    string? FailureReason = null,
+    string? ApplicationCode = null,
+    string? CredentialClass = null);
 
 public interface IServicePrincipalValidator
 {

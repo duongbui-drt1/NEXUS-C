@@ -23,6 +23,8 @@ public static class Permissions
     // API Management & Platform Operations
     public const string ApiRead = "platform.api.read";
     public const string ApiManage = "platform.api.manage";
+    public const string RateLimitsManage = "platform.ratelimits.manage";
+    public const string ApiLogsRead = "platform.apilogs.read";
     public const string OperationsRead = "platform.operations.read";
     public const string OperationsManage = "platform.operations.manage";
 
@@ -34,6 +36,7 @@ public static class Permissions
     public const string UsersRead = "platform.users.read";
     public const string UsersCreate = "platform.users.create";
     public const string UsersManage = "platform.users.manage";
+    public const string UsersProfileUpdate = "platform.users.profile.update";
 
     // Roles & Access Control
     public const string RolesRead = "platform.roles.read";
@@ -53,11 +56,13 @@ public static class Permissions
     // Subscriptions & Entitlements
     public const string SubscriptionsRead = "platform.subscriptions.read";
     public const string SubscriptionsManage = "platform.subscriptions.manage";
+    public const string SubscriptionsDelete = "platform.subscriptions.delete";
 
-    // Configuration & Feature Flags
+    // Configuration, Feature Flags & Reference Data / FX
     public const string ConfigurationRead = "platform.configuration.read";
     public const string ConfigurationManage = "platform.configuration.manage";
     public const string PlatformConfigurationManage = "platform.configuration.platform.manage";
+    public const string ReferenceDataManage = "platform.referencedata.manage";
 
     // Integrations & AI Gateway
     public const string IntegrationsRead = "platform.integrations.read";
@@ -65,9 +70,10 @@ public static class Permissions
     public const string AiGatewayInvoke = "platform.ai.invoke";
     public const string AiGatewayManage = "platform.ai.manage";
 
-    // Notifications
+    // Notifications & Shared Email
     public const string NotificationsRead = "platform.notifications.read";
     public const string NotificationsManage = "platform.notifications.manage";
+    public const string EmailManage = "platform.email.manage";
 
     // File Storage
     public const string FilesRead = "platform.files.read";
@@ -87,6 +93,8 @@ public static class Permissions
 
         (ApiRead, "Read API Specifications, Service Clients & Keys", PermissionScope.Both, "ApiManagement"),
         (ApiManage, "Manage API Clients, Keys & Policies", PermissionScope.Platform, "ApiManagement"),
+        (RateLimitsManage, "Manage Distributed Rate Limit Policies", PermissionScope.Platform, "ApiManagement"),
+        (ApiLogsRead, "Read Operational API Request Logs", PermissionScope.Both, "ApiManagement"),
         (OperationsRead, "Read Operations Health, Jobs & Event Queues", PermissionScope.Platform, "Operations"),
         (OperationsManage, "Manage Background Jobs & Dead Letters", PermissionScope.Platform, "Operations"),
 
@@ -96,6 +104,7 @@ public static class Permissions
         (UsersRead, "Read Users", PermissionScope.Both, "Identity"),
         (UsersCreate, "Create/Invite Users", PermissionScope.Both, "Identity"),
         (UsersManage, "Manage User Status, Sessions & Memberships", PermissionScope.Both, "Identity"),
+        (UsersProfileUpdate, "Edit Approved User Profile Metadata (Excludes Roles)", PermissionScope.Both, "Identity"),
 
         (RolesRead, "Read Roles & Permissions", PermissionScope.Both, "AccessControl"),
         (RolesCreate, "Create Custom Roles", PermissionScope.Both, "AccessControl"),
@@ -111,18 +120,21 @@ public static class Permissions
 
         (SubscriptionsRead, "Read Subscriptions & Entitlements", PermissionScope.Both, "Subscription"),
         (SubscriptionsManage, "Manage Plans & Tenant Subscriptions", PermissionScope.Platform, "Subscription"),
+        (SubscriptionsDelete, "Delete or Archive Subscription Plans", PermissionScope.Platform, "Subscription"),
 
         (ConfigurationRead, "Read Tenant Configuration & Flags", PermissionScope.Both, "Configuration"),
         (ConfigurationManage, "Manage Tenant Configuration & Flags", PermissionScope.Tenant, "Configuration"),
         (PlatformConfigurationManage, "Manage Global Platform Configuration", PermissionScope.Platform, "Configuration"),
+        (ReferenceDataManage, "Manage Reference Data Catalogs & FX Rates", PermissionScope.Platform, "Configuration"),
 
         (IntegrationsRead, "Read Integrations & Webhooks", PermissionScope.Tenant, "Integration"),
         (IntegrationsManage, "Manage Integrations & Webhooks", PermissionScope.Tenant, "Integration"),
         (AiGatewayInvoke, "Invoke AI Gateway", PermissionScope.Tenant, "AI"),
-        (AiGatewayManage, "Manage AI Gateway Models", PermissionScope.Platform, "AI"),
+        (AiGatewayManage, "Manage AI Gateway Models & Policies", PermissionScope.Platform, "AI"),
 
         (NotificationsRead, "Read Notifications", PermissionScope.Tenant, "Notification"),
         (NotificationsManage, "Manage Templates & Send Notifications", PermissionScope.Both, "Notification"),
+        (EmailManage, "Manage Shared Email Provider, Deliveries & Suppressions", PermissionScope.Platform, "Email"),
 
         (FilesRead, "Read & Download Tenant Files", PermissionScope.Tenant, "FileStorage"),
         (FilesUpload, "Upload Tenant Files", PermissionScope.Tenant, "FileStorage"),

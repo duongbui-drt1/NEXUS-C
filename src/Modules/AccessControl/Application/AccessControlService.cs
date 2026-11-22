@@ -11,8 +11,22 @@ using Nexus.SharedKernel.Security;
 namespace Nexus.Modules.AccessControl.Application;
 
 public sealed record PermissionDto(Guid Id, string Code, string Name, string Scope, string Category);
-public sealed record RoleDto(Guid Id, Guid? TenantId, string Name, string Description, string Scope, bool IsSystemRole, IReadOnlyList<string> Permissions);
-public sealed record CreateRoleRequest(string Name, string Description, IReadOnlyList<string> PermissionCodes);
+public sealed record RoleDto(
+    Guid Id,
+    Guid? TenantId,
+    string Name,
+    string Description,
+    string Scope,
+    bool IsSystemRole,
+    IReadOnlyList<string> Permissions,
+    string? ApplicationCode = null,
+    bool IsSharedReusable = false);
+public sealed record CreateRoleRequest(
+    string Name,
+    string Description,
+    IReadOnlyList<string> PermissionCodes,
+    string? ApplicationCode = null,
+    bool IsSharedReusable = false);
 public sealed record AssignRoleRequest(
     Guid UserId,
     Guid RoleId,
@@ -93,7 +107,7 @@ public sealed class AccessControlService(
                 [
                     Permissions.TenantsRead, Permissions.ApplicationsRead, Permissions.UsersRead, Permissions.RolesRead,
                     Permissions.AuditRead, Permissions.AuditReadAllTenants, Permissions.SubscriptionsRead,
-                    Permissions.ConfigurationRead, Permissions.ApiRead, Permissions.OperationsRead
+                    Permissions.ConfigurationRead, Permissions.ApiRead, Permissions.ApiLogsRead, Permissions.OperationsRead
                 ]),
 
             [SystemRoles.TenantOwner] = (
@@ -107,14 +121,14 @@ public sealed class AccessControlService(
                 [
                     Permissions.ApplicationsRead, Permissions.SubscriptionsRead,
                     Permissions.OrganizationsRead, Permissions.OrganizationsManage,
-                    Permissions.UsersRead, Permissions.UsersCreate, Permissions.UsersManage,
+                    Permissions.UsersRead, Permissions.UsersCreate, Permissions.UsersManage, Permissions.UsersProfileUpdate,
                     Permissions.RolesRead, Permissions.RolesAssign,
                     Permissions.WorkflowsRead, Permissions.WorkflowsManage,
                     Permissions.ConfigurationRead, Permissions.ConfigurationManage,
                     Permissions.IntegrationsRead, Permissions.IntegrationsManage,
                     Permissions.NotificationsRead, Permissions.NotificationsManage,
                     Permissions.FilesRead, Permissions.FilesUpload, Permissions.FilesDelete,
-                    Permissions.ApiRead
+                    Permissions.ApiRead, Permissions.ApiLogsRead
                 ]),
 
             [SystemRoles.CFO] = (
@@ -236,7 +250,9 @@ public sealed class AccessControlService(
             r.Description,
             r.Scope.ToString(),
             r.IsSystemRole,
-            r.RolePermissions.Where(rp => rp.Permission != null).Select(rp => rp.Permission!.Code).OrderBy(c => c).ToList()
+            r.RolePermissions.Where(rp => rp.Permission != null).Select(rp => rp.Permission!.Code).OrderBy(c => c).ToList(),
+            r.ApplicationCode,
+            r.IsSharedReusable
         )).ToList();
     }
 
@@ -246,7 +262,7 @@ public sealed class AccessControlService(
         var scope = isPlatform ? RoleScopeType.Platform : RoleScopeType.Tenant;
         var tenantId = isPlatform ? null : tenantContext.TenantId;
 
-        var created = Role.Create(request.Name, request.Description, scope, tenantId, isSystemRole: false);
+        var created = Role.Create(request.Name, request.Description, scope, tenantId, isSystemRole: false, request.ApplicationCode, request.IsSharedReusable);
         if (created.IsFailure) return Result.Failure<RoleDto>(created.Error);
 
         var role = created.Value;
@@ -279,9 +295,9 @@ public sealed class AccessControlService(
 
         await auditWriter.WriteAsync(new AuditEntryRequest(
             "access_control.role.create", "Role", role.Id.ToString("D"), tenantId, "Success",
-            AfterState: new { role.Name, Scope = role.Scope.ToString(), Permissions = requestedCodes }), ct);
+            AfterState: new { role.Name, Scope = role.Scope.ToString(), role.ApplicationCode, role.IsSharedReusable, Permissions = requestedCodes }), ct);
 
-        return new RoleDto(role.Id, role.TenantId, role.Name, role.Description, role.Scope.ToString(), role.IsSystemRole, requestedCodes);
+        return new RoleDto(role.Id, role.TenantId, role.Name, role.Description, role.Scope.ToString(), role.IsSystemRole, requestedCodes, role.ApplicationCode, role.IsSharedReusable);
     }
 
     public async Task<Result<UserRoleDto>> AssignRoleAsync(AssignRoleRequest request, CancellationToken ct = default)
@@ -568,14 +584,37 @@ public sealed class AccessControlService(
         }
 
         var assignments = await query.ToListAsync(ct);
-        var matchingRoleAssignments = assignments
+
+        // Enforce strict Application-Scope Isolation:
+        // An application-bound role (e.g., NEXUS_F) MUST NEVER authorize operations in another application (e.g., NEXUS_M).
+        var targetApp = string.IsNullOrWhiteSpace(request.ApplicationCode) ? null : request.ApplicationCode.Trim().ToUpperInvariant();
+        var appFilteredAssignments = assignments.Where(ur =>
+        {
+            var roleApp = ur.Role?.ApplicationCode;
+            if (string.IsNullOrWhiteSpace(roleApp))
+            {
+                return true; // Core / shared role applies across apps unless restricted by explicit permissions
+            }
+            if (targetApp is null)
+            {
+                return string.Equals(roleApp, "NEXUS_C", StringComparison.OrdinalIgnoreCase);
+            }
+            return string.Equals(roleApp, targetApp, StringComparison.OrdinalIgnoreCase);
+        }).ToList();
+
+        var matchingRoleAssignments = appFilteredAssignments
             .Where(ur => ur.Role?.RolePermissions.Any(rp =>
                 rp.Permission != null && string.Equals(rp.Permission.Code, request.PermissionCode, StringComparison.OrdinalIgnoreCase)) == true)
             .ToList();
 
         if (matchingRoleAssignments.Count == 0)
         {
-            return new AuthorizationDecision(false, "PERMISSION_NOT_GRANTED");
+            var blockedByAppScope = assignments.Any(ur =>
+                !string.IsNullOrWhiteSpace(ur.Role?.ApplicationCode) &&
+                ur.Role.RolePermissions.Any(rp =>
+                    rp.Permission != null && string.Equals(rp.Permission.Code, request.PermissionCode, StringComparison.OrdinalIgnoreCase)));
+
+            return new AuthorizationDecision(false, blockedByAppScope ? "APPLICATION_SCOPE_DENIED" : "PERMISSION_NOT_GRANTED");
         }
 
         // 1. Evaluate Explicit Deny first (applies globally or for matching scope)

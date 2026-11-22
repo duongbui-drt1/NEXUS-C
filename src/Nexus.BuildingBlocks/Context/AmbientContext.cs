@@ -117,6 +117,10 @@ public sealed class HttpCurrentUser(IHttpContextAccessor httpContextAccessor) : 
 
     public string? ServiceClientId => Principal?.FindFirstValue("client_id");
 
+    public string? ApplicationCode => Principal?.FindFirstValue("app_code") ?? Principal?.FindFirstValue("app");
+
+    public string? CredentialClass => Principal?.FindFirstValue("cred_class");
+
     public IReadOnlyList<string> GrantedScopes
     {
         get

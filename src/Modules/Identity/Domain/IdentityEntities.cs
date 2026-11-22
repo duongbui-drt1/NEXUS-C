@@ -193,9 +193,17 @@ public sealed class LoginAttempt : Entity
         };
 }
 
+public enum CredentialClass
+{
+    CoreInternal = 1,
+    SharedEcosystem = 2,
+    Application = 3,
+    Partner = 4
+}
+
 /// <summary>
-/// Registered machine-to-machine OAuth 2.0 Client Credentials identity (e.g., NEXUS_F, NEXUS_E, NEXUS_M).
-/// Secrets are stored exclusively as salted SHA-256 hashes — never plaintext.
+/// Registered machine-to-machine OAuth 2.0 Client Credentials identity (e.g., NEXUS_F, NEXUS_E, NEXUS_M, Partner).
+/// Secrets are stored exclusively as salted SHA-256 hashes — never plaintext. Supports optional rotation overlap grace windows.
 /// </summary>
 public sealed class ServiceClient : AuditableEntity
 {
@@ -203,13 +211,18 @@ public sealed class ServiceClient : AuditableEntity
 
     public string ClientId { get; private set; } = string.Empty;
     public string Name { get; private set; } = string.Empty;
+    public CredentialClass CredentialClass { get; private set; } = CredentialClass.Application;
     public string? ApplicationCode { get; private set; }
     public Guid? TenantId { get; private set; }
     public string SecretSalt { get; private set; } = string.Empty;
     public string ClientSecretHash { get; private set; } = string.Empty;
     public string SecretPrefix { get; private set; } = string.Empty;
+    public string? PreviousSecretSalt { get; private set; }
+    public string? PreviousSecretHash { get; private set; }
+    public DateTimeOffset? PreviousSecretValidUntil { get; private set; }
     public string AllowedScopes { get; private set; } = string.Empty; // comma-separated explicit permission codes
     public int RateLimitPerMinute { get; private set; } = 300;
+    public DateTimeOffset? ExpiresAt { get; private set; }
     public bool IsActive { get; private set; } = true;
     public DateTimeOffset? RevokedAt { get; private set; }
     public DateTimeOffset? LastUsedAt { get; private set; }
@@ -227,7 +240,9 @@ public sealed class ServiceClient : AuditableEntity
         string secretHash,
         string secretPrefix,
         IReadOnlyList<string> scopes,
-        int rateLimitPerMinute = 300)
+        int rateLimitPerMinute = 300,
+        CredentialClass credentialClass = CredentialClass.Application,
+        DateTimeOffset? expiresAt = null)
     {
         if (string.IsNullOrWhiteSpace(clientId) || clientId.Trim().Length > 100)
         {
@@ -244,24 +259,45 @@ public sealed class ServiceClient : AuditableEntity
             return Error.Validation("SERVICE_CLIENT_SCOPES_REQUIRED", "At least one explicit scope is required.");
         }
 
+        var normApp = string.IsNullOrWhiteSpace(applicationCode) ? null : applicationCode.Trim().ToUpperInvariant();
+        if (credentialClass == CredentialClass.Partner && string.IsNullOrWhiteSpace(normApp))
+        {
+            return Error.Validation("SERVICE_CLIENT_APP_REQUIRED", "Partner service credentials must bind to an explicit ApplicationCode.");
+        }
+
         return new ServiceClient
         {
             Id = Guid.CreateVersion7(),
             ClientId = clientId.Trim().ToLowerInvariant(),
             Name = name.Trim(),
-            ApplicationCode = string.IsNullOrWhiteSpace(applicationCode) ? null : applicationCode.Trim().ToUpperInvariant(),
+            CredentialClass = credentialClass,
+            ApplicationCode = normApp,
             TenantId = tenantId,
             SecretSalt = secretSalt,
             ClientSecretHash = secretHash,
             SecretPrefix = secretPrefix,
             AllowedScopes = string.Join(',', scopes.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(s => s)),
             RateLimitPerMinute = Math.Clamp(rateLimitPerMinute, 10, 10_000),
+            ExpiresAt = expiresAt,
             IsActive = true
         };
     }
 
-    public void RotateSecret(string newSalt, string newHash, string newPrefix, DateTimeOffset utcNow)
+    public void RotateSecret(string newSalt, string newHash, string newPrefix, DateTimeOffset utcNow, int overlapMinutes = 0)
     {
+        if (overlapMinutes > 0)
+        {
+            PreviousSecretSalt = SecretSalt;
+            PreviousSecretHash = ClientSecretHash;
+            PreviousSecretValidUntil = utcNow.AddMinutes(Math.Clamp(overlapMinutes, 1, 1440));
+        }
+        else
+        {
+            PreviousSecretSalt = null;
+            PreviousSecretHash = null;
+            PreviousSecretValidUntil = null;
+        }
+
         SecretSalt = newSalt;
         ClientSecretHash = newHash;
         SecretPrefix = newPrefix;
@@ -272,22 +308,30 @@ public sealed class ServiceClient : AuditableEntity
     {
         IsActive = false;
         RevokedAt = utcNow;
+        PreviousSecretSalt = null;
+        PreviousSecretHash = null;
+        PreviousSecretValidUntil = null;
     }
 
     public void MarkUsed(DateTimeOffset utcNow) => LastUsedAt = utcNow;
 }
 
 /// <summary>
-/// Strictly scoped API key with one-way SHA-256 verification. Never bypasses RBAC permissions.
+/// Strictly scoped API key with one-way SHA-256 verification. Never bypasses RBAC permissions or escapes application/tenant scope.
 /// </summary>
 public sealed class ApiKeyRecord : AuditableEntity
 {
     private ApiKeyRecord() { }
 
     public string Name { get; private set; } = string.Empty;
+    public CredentialClass CredentialClass { get; private set; } = CredentialClass.Application;
+    public string? ApplicationCode { get; private set; }
+    public Guid? ServiceClientId { get; private set; }
     public Guid? TenantId { get; private set; }
     public string KeyPrefix { get; private set; } = string.Empty;
     public string KeyHash { get; private set; } = string.Empty;
+    public string? PreviousKeyHash { get; private set; }
+    public DateTimeOffset? PreviousKeyValidUntil { get; private set; }
     public string AllowedScopes { get; private set; } = string.Empty;
     public DateTimeOffset? ExpiresAt { get; private set; }
     public bool IsActive { get; private set; } = true;
@@ -305,7 +349,10 @@ public sealed class ApiKeyRecord : AuditableEntity
         string keyHash,
         IReadOnlyList<string> scopes,
         DateTimeOffset? expiresAt,
-        Guid? ownerUserId)
+        Guid? ownerUserId,
+        CredentialClass credentialClass = CredentialClass.Application,
+        string? applicationCode = null,
+        Guid? serviceClientId = null)
     {
         if (string.IsNullOrWhiteSpace(name) || name.Trim().Length > 150)
         {
@@ -317,10 +364,19 @@ public sealed class ApiKeyRecord : AuditableEntity
             return Error.Validation("API_KEY_SCOPES_REQUIRED", "API key must declare at least one explicit permission scope.");
         }
 
+        var normApp = string.IsNullOrWhiteSpace(applicationCode) ? null : applicationCode.Trim().ToUpperInvariant();
+        if (credentialClass == CredentialClass.Partner && string.IsNullOrWhiteSpace(normApp))
+        {
+            return Error.Validation("API_KEY_APP_REQUIRED", "Partner API keys must bind to an explicit ApplicationCode.");
+        }
+
         return new ApiKeyRecord
         {
             Id = Guid.CreateVersion7(),
             Name = name.Trim(),
+            CredentialClass = credentialClass,
+            ApplicationCode = normApp,
+            ServiceClientId = serviceClientId,
             TenantId = tenantId,
             KeyPrefix = keyPrefix,
             KeyHash = keyHash,
@@ -331,8 +387,19 @@ public sealed class ApiKeyRecord : AuditableEntity
         };
     }
 
-    public void Rotate(string newPrefix, string newHash, DateTimeOffset? newExpiresAt)
+    public void Rotate(string newPrefix, string newHash, DateTimeOffset? newExpiresAt, DateTimeOffset? utcNow = null, int overlapMinutes = 0)
     {
+        if (overlapMinutes > 0 && utcNow.HasValue)
+        {
+            PreviousKeyHash = KeyHash;
+            PreviousKeyValidUntil = utcNow.Value.AddMinutes(Math.Clamp(overlapMinutes, 1, 1440));
+        }
+        else
+        {
+            PreviousKeyHash = null;
+            PreviousKeyValidUntil = null;
+        }
+
         KeyPrefix = newPrefix;
         KeyHash = newHash;
         if (newExpiresAt.HasValue) ExpiresAt = newExpiresAt;
@@ -342,6 +409,8 @@ public sealed class ApiKeyRecord : AuditableEntity
     {
         IsActive = false;
         RevokedAt = utcNow;
+        PreviousKeyHash = null;
+        PreviousKeyValidUntil = null;
     }
 
     public void MarkUsed(DateTimeOffset utcNow) => LastUsedAt = utcNow;

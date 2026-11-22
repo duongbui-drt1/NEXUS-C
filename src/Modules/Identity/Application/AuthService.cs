@@ -92,7 +92,8 @@ public interface ITokenGenerator
         string? applicationCode,
         Guid? tenantId,
         IReadOnlyList<string> scopes,
-        TimeSpan? overrideLifetime = null);
+        TimeSpan? overrideLifetime = null,
+        string? credentialClass = null);
 }
 
 public sealed class JwtTokenGenerator(IOptions<JwtOptions> options, ISystemClock clock) : ITokenGenerator
@@ -148,7 +149,8 @@ public sealed class JwtTokenGenerator(IOptions<JwtOptions> options, ISystemClock
         string? applicationCode,
         Guid? tenantId,
         IReadOnlyList<string> scopes,
-        TimeSpan? overrideLifetime = null)
+        TimeSpan? overrideLifetime = null,
+        string? credentialClass = null)
     {
         var cfg = options.Value;
         if (string.IsNullOrWhiteSpace(cfg.SigningKey) || cfg.SigningKey.Length < 32)
@@ -170,6 +172,11 @@ public sealed class JwtTokenGenerator(IOptions<JwtOptions> options, ISystemClock
         if (!string.IsNullOrWhiteSpace(applicationCode))
         {
             claims.Add(new Claim("app_code", applicationCode));
+        }
+
+        if (!string.IsNullOrWhiteSpace(credentialClass))
+        {
+            claims.Add(new Claim("cred_class", credentialClass));
         }
 
         if (tenantId.HasValue)

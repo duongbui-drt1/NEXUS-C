@@ -17,7 +17,9 @@ public sealed record CreateServiceClientRequest(
     string? ApplicationCode,
     Guid? TenantId,
     IReadOnlyList<string> AllowedScopes,
-    int RateLimitPerMinute = 300);
+    int RateLimitPerMinute = 300,
+    CredentialClass CredentialClass = CredentialClass.Application,
+    DateTimeOffset? ExpiresAt = null);
 
 public sealed record ServiceClientDto(
     Guid Id,
@@ -32,7 +34,10 @@ public sealed record ServiceClientDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset? LastUsedAt,
     DateTimeOffset? SecretRotatedAt,
-    DateTimeOffset? RevokedAt);
+    DateTimeOffset? RevokedAt,
+    string CredentialClass = "Application",
+    DateTimeOffset? ExpiresAt = null,
+    DateTimeOffset? PreviousSecretValidUntil = null);
 
 public sealed record ServiceClientWithSecretDto(ServiceClientDto Client, string ClientSecret);
 
@@ -50,13 +55,18 @@ public sealed record ServiceTokenResponse(
     DateTimeOffset ExpiresAt,
     string ClientId,
     Guid? TenantId,
-    IReadOnlyList<string> Scopes);
+    IReadOnlyList<string> Scopes,
+    string? ApplicationCode = null,
+    string CredentialClass = "Application");
 
 public sealed record CreateApiKeyRequest(
     string Name,
     IReadOnlyList<string> AllowedScopes,
     DateTimeOffset? ExpiresAt = null,
-    Guid? TenantId = null);
+    Guid? TenantId = null,
+    CredentialClass CredentialClass = CredentialClass.Application,
+    string? ApplicationCode = null,
+    Guid? ServiceClientId = null);
 
 public sealed record ApiKeyDto(
     Guid Id,
@@ -68,7 +78,11 @@ public sealed record ApiKeyDto(
     bool IsActive,
     DateTimeOffset CreatedAt,
     DateTimeOffset? LastUsedAt,
-    DateTimeOffset? RevokedAt);
+    DateTimeOffset? RevokedAt,
+    string CredentialClass = "Application",
+    string? ApplicationCode = null,
+    Guid? ServiceClientId = null,
+    DateTimeOffset? PreviousKeyValidUntil = null);
 
 public sealed record ApiKeyWithSecretDto(ApiKeyDto ApiKey, string RawApiKey);
 
@@ -76,13 +90,13 @@ public interface IServiceClientService
 {
     Task<Result<ServiceClientWithSecretDto>> CreateServiceClientAsync(CreateServiceClientRequest request, CancellationToken ct = default);
     Task<Result<IReadOnlyList<ServiceClientDto>>> ListServiceClientsAsync(CancellationToken ct = default);
-    Task<Result<ServiceClientWithSecretDto>> RotateServiceClientSecretAsync(Guid id, CancellationToken ct = default);
+    Task<Result<ServiceClientWithSecretDto>> RotateServiceClientSecretAsync(Guid id, int overlapMinutes = 0, CancellationToken ct = default);
     Task<Result> RevokeServiceClientAsync(Guid id, CancellationToken ct = default);
     Task<Result<ServiceTokenResponse>> IssueClientCredentialsTokenAsync(ClientCredentialsTokenRequest request, CancellationToken ct = default);
 
     Task<Result<ApiKeyWithSecretDto>> CreateApiKeyAsync(CreateApiKeyRequest request, CancellationToken ct = default);
     Task<Result<IReadOnlyList<ApiKeyDto>>> ListApiKeysAsync(CancellationToken ct = default);
-    Task<Result<ApiKeyWithSecretDto>> RotateApiKeyAsync(Guid id, DateTimeOffset? newExpiresAt = null, CancellationToken ct = default);
+    Task<Result<ApiKeyWithSecretDto>> RotateApiKeyAsync(Guid id, DateTimeOffset? newExpiresAt = null, int overlapMinutes = 0, CancellationToken ct = default);
     Task<Result> RevokeApiKeyAsync(Guid id, CancellationToken ct = default);
 }
 
@@ -111,7 +125,8 @@ public sealed class ServiceClientService(
             return Error.Forbidden("SERVICE_CLIENT_PLATFORM_ONLY", "Only platform administrators may register service clients.");
         }
 
-        var scopeCheck = ValidateScopes(request.AllowedScopes, allowPlatformScopes: !request.TenantId.HasValue);
+        var allowPlatformScopes = !request.TenantId.HasValue && request.CredentialClass != CredentialClass.Partner;
+        var scopeCheck = ValidateScopes(request.AllowedScopes, allowPlatformScopes: allowPlatformScopes, isPartner: request.CredentialClass == CredentialClass.Partner);
         if (scopeCheck.IsFailure) return Result.Failure<ServiceClientWithSecretDto>(scopeCheck.Error);
 
         var normalizedId = request.ClientId?.Trim().ToLowerInvariant() ?? string.Empty;
@@ -127,7 +142,8 @@ public sealed class ServiceClientService(
 
         var created = ServiceClient.Create(
             normalizedId, request.Name, request.ApplicationCode, request.TenantId,
-            salt, hash, prefix, scopeCheck.Value, request.RateLimitPerMinute);
+            salt, hash, prefix, scopeCheck.Value, request.RateLimitPerMinute,
+            request.CredentialClass, request.ExpiresAt);
         if (created.IsFailure) return Result.Failure<ServiceClientWithSecretDto>(created.Error);
 
         var client = created.Value;
@@ -168,7 +184,7 @@ public sealed class ServiceClientService(
         return items.Select(MapClient).ToList();
     }
 
-    public async Task<Result<ServiceClientWithSecretDto>> RotateServiceClientSecretAsync(Guid id, CancellationToken ct = default)
+    public async Task<Result<ServiceClientWithSecretDto>> RotateServiceClientSecretAsync(Guid id, int overlapMinutes = 0, CancellationToken ct = default)
     {
         if (!currentUser.IsPlatformUser)
         {
@@ -184,13 +200,13 @@ public sealed class ServiceClientService(
         var hash = HashSecret(rawSecret, salt);
         var now = clock.UtcNow;
 
-        client.RotateSecret(salt, hash, rawSecret[..12], now);
+        client.RotateSecret(salt, hash, rawSecret[..12], now, overlapMinutes);
         client.SetUpdatedAudit(currentUser.UserId, now);
         await db.SaveChangesAsync(ct);
 
         await auditWriter.WriteAsync(new AuditEntryRequest(
             "identity.service_client.rotate_secret", "ServiceClient", client.Id.ToString("D"), client.TenantId, "Success",
-            AfterState: new { client.ClientId, client.SecretPrefix, client.SecretRotatedAt },
+            AfterState: new { client.ClientId, client.SecretPrefix, client.SecretRotatedAt, client.PreviousSecretValidUntil },
             IsCrossTenantPlatformAccess: true), ct);
 
         return new ServiceClientWithSecretDto(MapClient(client), rawSecret);
@@ -241,14 +257,24 @@ public sealed class ServiceClientService(
 
         var normalizedId = request.ClientId.Trim().ToLowerInvariant();
         var client = await db.ServiceClients.FirstOrDefaultAsync(c => c.ClientId == normalizedId, ct);
-        if (client is null || !client.IsActive)
+        var nowCheck = clock.UtcNow;
+        if (client is null || !client.IsActive || (client.ExpiresAt.HasValue && client.ExpiresAt.Value <= nowCheck))
         {
             NexusPlatformMetrics.AuthAttempts.Add(1, new KeyValuePair<string, object?>("mode", "client_credentials"), new KeyValuePair<string, object?>("result", "failure"));
-            return Error.Unauthorized("INVALID_CLIENT", "Invalid or revoked service client credentials.");
+            return Error.Unauthorized("INVALID_CLIENT", "Invalid, expired, or revoked service client credentials.");
         }
 
-        var candidateHash = HashSecret(request.ClientSecret.Trim(), client.SecretSalt);
-        if (!CryptoHelper.FixedTimeEquals(candidateHash, client.ClientSecretHash))
+        var rawSecretTrimmed = request.ClientSecret.Trim();
+        var candidateHash = HashSecret(rawSecretTrimmed, client.SecretSalt);
+        var matchedCurrent = CryptoHelper.FixedTimeEquals(candidateHash, client.ClientSecretHash);
+        var matchedOverlap = !matchedCurrent
+            && !string.IsNullOrWhiteSpace(client.PreviousSecretSalt)
+            && !string.IsNullOrWhiteSpace(client.PreviousSecretHash)
+            && client.PreviousSecretValidUntil.HasValue
+            && client.PreviousSecretValidUntil.Value > nowCheck
+            && CryptoHelper.FixedTimeEquals(HashSecret(rawSecretTrimmed, client.PreviousSecretSalt), client.PreviousSecretHash);
+
+        if (!matchedCurrent && !matchedOverlap)
         {
             NexusPlatformMetrics.AuthAttempts.Add(1, new KeyValuePair<string, object?>("mode", "client_credentials"), new KeyValuePair<string, object?>("result", "failure"));
             return Error.Unauthorized("INVALID_CLIENT", "Invalid or revoked service client credentials.");
@@ -287,16 +313,16 @@ public sealed class ServiceClientService(
 
         var lifetime = TimeSpan.FromMinutes(10);
         var (token, expiresAt) = tokenGenerator.GenerateServiceAccessToken(
-            client.Id, client.ClientId, client.ApplicationCode, effectiveTenantId, grantedScopes, lifetime);
+            client.Id, client.ClientId, client.ApplicationCode, effectiveTenantId, grantedScopes, lifetime, client.CredentialClass.ToString());
 
         NexusPlatformMetrics.AuthAttempts.Add(1, new KeyValuePair<string, object?>("mode", "client_credentials"), new KeyValuePair<string, object?>("result", "success"));
 
         await auditWriter.WriteAsync(new AuditEntryRequest(
             "identity.service_client.token_issued", "ServiceClient", client.Id.ToString("D"), effectiveTenantId, "Success",
-            AfterState: new { client.ClientId, Scopes = grantedScopes, TenantId = effectiveTenantId }), ct);
+            AfterState: new { client.ClientId, client.ApplicationCode, CredentialClass = client.CredentialClass.ToString(), Scopes = grantedScopes, TenantId = effectiveTenantId }), ct);
 
         return new ServiceTokenResponse(
-            token, "Bearer", (int)lifetime.TotalSeconds, expiresAt, client.ClientId, effectiveTenantId, grantedScopes);
+            token, "Bearer", (int)lifetime.TotalSeconds, expiresAt, client.ClientId, effectiveTenantId, grantedScopes, client.ApplicationCode, client.CredentialClass.ToString());
     }
 
     // === Scoped API Keys ===
@@ -316,14 +342,17 @@ public sealed class ServiceClientService(
             return Error.Forbidden("CROSS_TENANT_API_KEY_DENIED", "Cannot create an API key for another tenant.");
         }
 
-        var scopeCheck = ValidateScopes(request.AllowedScopes, allowPlatformScopes: isPlatformCaller && !targetTenantId.HasValue);
+        var allowPlatformScopes = isPlatformCaller && !targetTenantId.HasValue && request.CredentialClass != CredentialClass.Partner;
+        var scopeCheck = ValidateScopes(request.AllowedScopes, allowPlatformScopes: allowPlatformScopes, isPartner: request.CredentialClass == CredentialClass.Partner);
         if (scopeCheck.IsFailure) return Result.Failure<ApiKeyWithSecretDto>(scopeCheck.Error);
 
         var rawKey = $"nxk_{CryptoHelper.GenerateSecureToken(32)}";
         var keyHash = CryptoHelper.Sha256Hex(rawKey);
         var prefix = rawKey[..12];
 
-        var created = ApiKeyRecord.Create(request.Name, targetTenantId, prefix, keyHash, scopeCheck.Value, request.ExpiresAt, currentUser.UserId);
+        var created = ApiKeyRecord.Create(
+            request.Name, targetTenantId, prefix, keyHash, scopeCheck.Value, request.ExpiresAt, currentUser.UserId,
+            request.CredentialClass, request.ApplicationCode, request.ServiceClientId);
         if (created.IsFailure) return Result.Failure<ApiKeyWithSecretDto>(created.Error);
 
         var key = created.Value;
@@ -333,7 +362,7 @@ public sealed class ServiceClientService(
 
         await auditWriter.WriteAsync(new AuditEntryRequest(
             "identity.api_key.create", "ApiKeyRecord", key.Id.ToString("D"), targetTenantId, "Success",
-            AfterState: new { key.Name, key.KeyPrefix, Scopes = scopeCheck.Value, key.ExpiresAt }), ct);
+            AfterState: new { key.Name, key.KeyPrefix, key.ApplicationCode, CredentialClass = key.CredentialClass.ToString(), Scopes = scopeCheck.Value, key.ExpiresAt }), ct);
 
         return new ApiKeyWithSecretDto(MapKey(key), rawKey);
     }
@@ -355,7 +384,7 @@ public sealed class ServiceClientService(
         return items.Select(MapKey).ToList();
     }
 
-    public async Task<Result<ApiKeyWithSecretDto>> RotateApiKeyAsync(Guid id, DateTimeOffset? newExpiresAt = null, CancellationToken ct = default)
+    public async Task<Result<ApiKeyWithSecretDto>> RotateApiKeyAsync(Guid id, DateTimeOffset? newExpiresAt = null, int overlapMinutes = 0, CancellationToken ct = default)
     {
         var key = await db.ApiKeys.FirstOrDefaultAsync(k => k.Id == id, ct);
         if (key is null) return Error.NotFound("API_KEY_NOT_FOUND", "API key was not found.");
@@ -367,14 +396,15 @@ public sealed class ServiceClientService(
 
         if (!key.IsActive) return Error.BusinessRule("API_KEY_REVOKED", "Cannot rotate a revoked API key.");
 
+        var now = clock.UtcNow;
         var rawKey = $"nxk_{CryptoHelper.GenerateSecureToken(32)}";
-        key.Rotate(rawKey[..12], CryptoHelper.Sha256Hex(rawKey), newExpiresAt);
-        key.SetUpdatedAudit(currentUser.UserId, clock.UtcNow);
+        key.Rotate(rawKey[..12], CryptoHelper.Sha256Hex(rawKey), newExpiresAt, now, overlapMinutes);
+        key.SetUpdatedAudit(currentUser.UserId, now);
         await db.SaveChangesAsync(ct);
 
         await auditWriter.WriteAsync(new AuditEntryRequest(
             "identity.api_key.rotate", "ApiKeyRecord", key.Id.ToString("D"), key.TenantId, "Success",
-            AfterState: new { key.Name, key.KeyPrefix, key.ExpiresAt }), ct);
+            AfterState: new { key.Name, key.KeyPrefix, key.ExpiresAt, key.PreviousKeyValidUntil }), ct);
 
         return new ApiKeyWithSecretDto(MapKey(key), rawKey);
     }
@@ -405,35 +435,42 @@ public sealed class ServiceClientService(
     {
         var normalized = clientId.Trim().ToLowerInvariant();
         var client = await db.ServiceClients.AsNoTracking().FirstOrDefaultAsync(c => c.ClientId == normalized, ct);
-        if (client is null || !client.IsActive)
+        var now = clock.UtcNow;
+        if (client is null || !client.IsActive || (client.ExpiresAt.HasValue && client.ExpiresAt.Value <= now))
         {
-            return new ServicePrincipalValidationResult(false, null, null, null, [], "Service client is revoked or inactive.");
+            return new ServicePrincipalValidationResult(false, null, null, null, [], "Service client is revoked, expired, or inactive.");
         }
 
-        return new ServicePrincipalValidationResult(true, client.Id, client.ClientId, client.TenantId, client.GetAllowedScopes());
+        return new ServicePrincipalValidationResult(
+            true, client.Id, client.ClientId, client.TenantId, client.GetAllowedScopes(),
+            ApplicationCode: client.ApplicationCode, CredentialClass: client.CredentialClass.ToString());
     }
 
     public async Task<ServicePrincipalValidationResult> ValidateApiKeyAsync(string rawApiKey, CancellationToken ct = default)
     {
+        var now = clock.UtcNow;
         var hash = CryptoHelper.Sha256Hex(rawApiKey.Trim());
-        var key = await db.ApiKeys.FirstOrDefaultAsync(k => k.KeyHash == hash, ct);
+        var key = await db.ApiKeys.FirstOrDefaultAsync(
+            k => k.KeyHash == hash || (k.PreviousKeyHash == hash && k.PreviousKeyValidUntil != null && k.PreviousKeyValidUntil > now), ct);
         if (key is null || !key.IsActive)
         {
             return new ServicePrincipalValidationResult(false, null, null, null, [], "API key is invalid or revoked.");
         }
 
-        if (key.ExpiresAt.HasValue && key.ExpiresAt.Value <= clock.UtcNow)
+        if (key.ExpiresAt.HasValue && key.ExpiresAt.Value <= now)
         {
             return new ServicePrincipalValidationResult(false, null, null, null, [], "API key has expired.");
         }
 
-        key.MarkUsed(clock.UtcNow);
+        key.MarkUsed(now);
         await db.SaveChangesAsync(ct);
 
-        return new ServicePrincipalValidationResult(true, key.Id, $"apikey:{key.KeyPrefix}", key.TenantId, key.GetAllowedScopes());
+        return new ServicePrincipalValidationResult(
+            true, key.Id, $"apikey:{key.KeyPrefix}", key.TenantId, key.GetAllowedScopes(),
+            ApplicationCode: key.ApplicationCode, CredentialClass: key.CredentialClass.ToString());
     }
 
-    private static Result<IReadOnlyList<string>> ValidateScopes(IReadOnlyList<string> scopes, bool allowPlatformScopes)
+    private static Result<IReadOnlyList<string>> ValidateScopes(IReadOnlyList<string> scopes, bool allowPlatformScopes, bool isPartner = false)
     {
         if (scopes is null || scopes.Count == 0)
         {
@@ -459,7 +496,11 @@ public sealed class ServiceClientService(
 
         if (!allowPlatformScopes && clean.Any(PlatformOnlyPermissions.Contains))
         {
-            return Error.Forbidden("PLATFORM_SCOPE_FORBIDDEN", "Tenant-bound service clients or API keys cannot be granted platform-only scopes.");
+            return Error.Forbidden(
+                isPartner ? "PARTNER_PLATFORM_SCOPE_FORBIDDEN" : "PLATFORM_SCOPE_FORBIDDEN",
+                isPartner
+                    ? "Partner credentials cannot be granted platform-admin scopes."
+                    : "Tenant-bound service clients or API keys cannot be granted platform-only scopes.");
         }
 
         return clean;
@@ -471,9 +512,11 @@ public sealed class ServiceClientService(
     private static ServiceClientDto MapClient(ServiceClient c) => new(
         c.Id, c.ClientId, c.Name, c.ApplicationCode, c.TenantId, c.SecretPrefix,
         c.GetAllowedScopes(), c.RateLimitPerMinute, c.IsActive, c.CreatedAt,
-        c.LastUsedAt, c.SecretRotatedAt, c.RevokedAt);
+        c.LastUsedAt, c.SecretRotatedAt, c.RevokedAt,
+        c.CredentialClass.ToString(), c.ExpiresAt, c.PreviousSecretValidUntil);
 
     private static ApiKeyDto MapKey(ApiKeyRecord k) => new(
         k.Id, k.Name, k.TenantId, k.KeyPrefix, k.GetAllowedScopes(),
-        k.ExpiresAt, k.IsActive, k.CreatedAt, k.LastUsedAt, k.RevokedAt);
+        k.ExpiresAt, k.IsActive, k.CreatedAt, k.LastUsedAt, k.RevokedAt,
+        k.CredentialClass.ToString(), k.ApplicationCode, k.ServiceClientId, k.PreviousKeyValidUntil);
 }

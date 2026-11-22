@@ -247,6 +247,13 @@ namespace Nexus.Modules.Subscription.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("AllowedAuthMethods")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(250)
+                        .HasColumnType("character varying(250)")
+                        .HasDefaultValue("jwt,oauth2_client_credentials");
+
                     b.Property<string>("Code")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -286,6 +293,17 @@ namespace Nexus.Modules.Subscription.Infrastructure.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
+                    b.Property<string>("Owner")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)")
+                        .HasDefaultValue("NEXUS Platform");
+
+                    b.Property<string>("RedirectOrigins")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
                     b.Property<string>("ReleaseChannel")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -306,6 +324,13 @@ namespace Nexus.Modules.Subscription.Infrastructure.Migrations
                         .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
+
+                    b.Property<string>("TrustClassification")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("FirstParty");
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");

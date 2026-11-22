@@ -106,14 +106,18 @@ public sealed class IdentityModuleDbContext(DbContextOptions<IdentityModuleDbCon
             e.HasKey(x => x.Id);
             e.Property(x => x.ClientId).HasMaxLength(100).IsRequired();
             e.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            e.Property(x => x.CredentialClass).HasConversion<string>().HasMaxLength(32).HasDefaultValue(CredentialClass.Application).HasSentinel(CredentialClass.Application).IsRequired();
             e.Property(x => x.ApplicationCode).HasMaxLength(32);
             e.Property(x => x.SecretSalt).HasMaxLength(128).IsRequired();
             e.Property(x => x.ClientSecretHash).HasMaxLength(128).IsRequired();
             e.Property(x => x.SecretPrefix).HasMaxLength(32).IsRequired();
+            e.Property(x => x.PreviousSecretSalt).HasMaxLength(128);
+            e.Property(x => x.PreviousSecretHash).HasMaxLength(128);
             e.Property(x => x.AllowedScopes).HasMaxLength(2000).IsRequired();
             e.Property(x => x.RowVersion).IsRowVersion();
             e.HasIndex(x => x.ClientId).IsUnique();
             e.HasIndex(x => x.TenantId);
+            e.HasIndex(x => x.ApplicationCode);
         });
 
         builder.Entity<ApiKeyRecord>(e =>
@@ -121,12 +125,17 @@ public sealed class IdentityModuleDbContext(DbContextOptions<IdentityModuleDbCon
             e.ToTable("api_keys", SchemaName);
             e.HasKey(x => x.Id);
             e.Property(x => x.Name).HasMaxLength(150).IsRequired();
+            e.Property(x => x.CredentialClass).HasConversion<string>().HasMaxLength(32).HasDefaultValue(CredentialClass.Application).HasSentinel(CredentialClass.Application).IsRequired();
+            e.Property(x => x.ApplicationCode).HasMaxLength(32);
             e.Property(x => x.KeyPrefix).HasMaxLength(32).IsRequired();
             e.Property(x => x.KeyHash).HasMaxLength(128).IsRequired();
+            e.Property(x => x.PreviousKeyHash).HasMaxLength(128);
             e.Property(x => x.AllowedScopes).HasMaxLength(2000).IsRequired();
             e.Property(x => x.RowVersion).IsRowVersion();
             e.HasIndex(x => x.KeyHash).IsUnique();
+            e.HasIndex(x => x.PreviousKeyHash);
             e.HasIndex(x => x.TenantId);
+            e.HasIndex(x => x.ApplicationCode);
         });
 
         builder.Entity<OutboxMessage>(e =>

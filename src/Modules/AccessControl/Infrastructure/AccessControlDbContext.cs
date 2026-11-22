@@ -36,6 +36,8 @@ public sealed class AccessControlDbContext(
             e.Property(x => x.NormalizedName).HasMaxLength(100).IsRequired();
             e.Property(x => x.Description).HasMaxLength(500);
             e.Property(x => x.Scope).HasConversion<string>().HasMaxLength(32).IsRequired();
+            e.Property(x => x.ApplicationCode).HasMaxLength(32);
+            e.Property(x => x.IsSharedReusable).HasDefaultValue(false).IsRequired();
             e.HasIndex(x => new { x.NormalizedName, x.TenantId }).IsUnique();
 
             e.HasQueryFilter(r =>

@@ -21,6 +21,13 @@ public enum ApplicationStatus
     Retired = 4
 }
 
+public enum ApplicationTrustClassification
+{
+    Internal = 1,
+    FirstParty = 2,
+    Partner = 3
+}
+
 public sealed class RegisteredApplication : AuditableEntity
 {
     private RegisteredApplication() { }
@@ -28,6 +35,10 @@ public sealed class RegisteredApplication : AuditableEntity
     public string Code { get; private set; } = string.Empty;
     public string Name { get; private set; } = string.Empty;
     public string Description { get; private set; } = string.Empty;
+    public string Owner { get; private set; } = "NEXUS Platform";
+    public ApplicationTrustClassification TrustClassification { get; private set; } = ApplicationTrustClassification.FirstParty;
+    public string AllowedAuthMethods { get; private set; } = "jwt,oauth2_client_credentials";
+    public string? RedirectOrigins { get; private set; }
     public string CurrentVersion { get; private set; } = "1.0.0";
     public string ReleaseChannel { get; private set; } = "Stable";
     public ApplicationStatus Status { get; private set; } = ApplicationStatus.Registered;
@@ -42,6 +53,14 @@ public sealed class RegisteredApplication : AuditableEntity
     public IReadOnlyList<string> GetModuleDependencies()
         => ModuleDependencies.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
+    public IReadOnlyList<string> GetAllowedAuthMethods()
+        => AllowedAuthMethods.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    public IReadOnlyList<string> GetRedirectOrigins()
+        => string.IsNullOrWhiteSpace(RedirectOrigins)
+            ? []
+            : RedirectOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
     public static Result<RegisteredApplication> Create(
         string code,
         string name,
@@ -52,7 +71,11 @@ public sealed class RegisteredApplication : AuditableEntity
         string minPlatformVersion,
         IReadOnlyList<string>? requiredCapabilities = null,
         IReadOnlyList<string>? moduleDependencies = null,
-        string? compatibilityMetadataJson = null)
+        string? compatibilityMetadataJson = null,
+        string? owner = null,
+        ApplicationTrustClassification trustClassification = ApplicationTrustClassification.FirstParty,
+        IReadOnlyList<string>? allowedAuthMethods = null,
+        IReadOnlyList<string>? redirectOrigins = null)
     {
         if (string.IsNullOrWhiteSpace(code) || code.Trim().Length > 32)
         {
@@ -70,6 +93,14 @@ public sealed class RegisteredApplication : AuditableEntity
             Code = code.Trim().ToUpperInvariant(),
             Name = name.Trim(),
             Description = description?.Trim() ?? string.Empty,
+            Owner = string.IsNullOrWhiteSpace(owner) ? "NEXUS Platform" : owner.Trim(),
+            TrustClassification = trustClassification,
+            AllowedAuthMethods = allowedAuthMethods is { Count: > 0 }
+                ? string.Join(',', allowedAuthMethods.Select(m => m.Trim().ToLowerInvariant()).Distinct())
+                : "jwt,oauth2_client_credentials",
+            RedirectOrigins = redirectOrigins is { Count: > 0 }
+                ? string.Join(',', redirectOrigins.Select(o => o.Trim()).Distinct(StringComparer.OrdinalIgnoreCase))
+                : null,
             CurrentVersion = string.IsNullOrWhiteSpace(currentVersion) ? "1.0.0" : currentVersion.Trim(),
             ReleaseChannel = string.IsNullOrWhiteSpace(releaseChannel) ? "Stable" : releaseChannel.Trim(),
             Status = status,
@@ -89,7 +120,11 @@ public sealed class RegisteredApplication : AuditableEntity
         string minPlatformVersion,
         IReadOnlyList<string>? requiredCapabilities,
         IReadOnlyList<string>? moduleDependencies,
-        string? compatibilityMetadataJson)
+        string? compatibilityMetadataJson,
+        string? owner = null,
+        ApplicationTrustClassification? trustClassification = null,
+        IReadOnlyList<string>? allowedAuthMethods = null,
+        IReadOnlyList<string>? redirectOrigins = null)
     {
         if (string.IsNullOrWhiteSpace(name) || name.Trim().Length > 200)
         {
@@ -98,6 +133,18 @@ public sealed class RegisteredApplication : AuditableEntity
 
         Name = name.Trim();
         Description = description?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(owner)) Owner = owner.Trim();
+        if (trustClassification.HasValue) TrustClassification = trustClassification.Value;
+        if (allowedAuthMethods is { Count: > 0 })
+        {
+            AllowedAuthMethods = string.Join(',', allowedAuthMethods.Select(m => m.Trim().ToLowerInvariant()).Distinct());
+        }
+        if (redirectOrigins is not null)
+        {
+            RedirectOrigins = redirectOrigins.Count == 0
+                ? null
+                : string.Join(',', redirectOrigins.Select(o => o.Trim()).Distinct(StringComparer.OrdinalIgnoreCase));
+        }
         CurrentVersion = string.IsNullOrWhiteSpace(currentVersion) ? CurrentVersion : currentVersion.Trim();
         ReleaseChannel = string.IsNullOrWhiteSpace(releaseChannel) ? ReleaseChannel : releaseChannel.Trim();
         Status = status;

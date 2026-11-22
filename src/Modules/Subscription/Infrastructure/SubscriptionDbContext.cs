@@ -32,6 +32,10 @@ public sealed class SubscriptionDbContext(
             e.Property(x => x.Code).HasMaxLength(32).IsRequired();
             e.Property(x => x.Name).HasMaxLength(200).IsRequired();
             e.Property(x => x.Description).HasMaxLength(1000);
+            e.Property(x => x.Owner).HasMaxLength(150).HasDefaultValue("NEXUS Platform").IsRequired();
+            e.Property(x => x.TrustClassification).HasConversion<string>().HasMaxLength(32).HasDefaultValue(ApplicationTrustClassification.FirstParty).HasSentinel(ApplicationTrustClassification.FirstParty).IsRequired();
+            e.Property(x => x.AllowedAuthMethods).HasMaxLength(250).HasDefaultValue("jwt,oauth2_client_credentials").IsRequired();
+            e.Property(x => x.RedirectOrigins).HasMaxLength(1000);
             e.Property(x => x.CurrentVersion).HasMaxLength(32).IsRequired();
             e.Property(x => x.ReleaseChannel).HasMaxLength(32).IsRequired();
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32).IsRequired();

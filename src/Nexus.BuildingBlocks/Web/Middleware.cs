@@ -101,6 +101,16 @@ public sealed class TenantContextMiddleware(RequestDelegate next, ILogger<Tenant
                     claims.Add(new Claim("tid", keyRes.BoundTenantId.Value.ToString("D")));
                 }
 
+                if (!string.IsNullOrWhiteSpace(keyRes.ApplicationCode))
+                {
+                    claims.Add(new Claim("app_code", keyRes.ApplicationCode));
+                }
+
+                if (!string.IsNullOrWhiteSpace(keyRes.CredentialClass))
+                {
+                    claims.Add(new Claim("cred_class", keyRes.CredentialClass));
+                }
+
                 foreach (var scp in keyRes.AllowedScopes)
                 {
                     claims.Add(new Claim("scp", scp));
@@ -153,6 +163,23 @@ public sealed class TenantContextMiddleware(RequestDelegate next, ILogger<Tenant
                     }
                     boundTenantId = clientStatus.BoundTenantId.Value;
                 }
+            }
+
+            // Strict Application-Scope Isolation for machine credentials:
+            // An application-bound or partner credential MUST NOT escape its owning application via X-Application-Code!
+            var requestedAppCode = context.Request.Headers["X-Application-Code"].FirstOrDefault()?.Trim();
+            var boundAppCode = currentUser.ApplicationCode;
+            var credClass = currentUser.CredentialClass;
+            if (!string.IsNullOrWhiteSpace(requestedAppCode) &&
+                !string.IsNullOrWhiteSpace(boundAppCode) &&
+                !string.Equals(credClass, "CoreInternal", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(credClass, "SharedEcosystem", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(boundAppCode, requestedAppCode, StringComparison.OrdinalIgnoreCase))
+            {
+                await WriteProblemAsync(context, Error.Forbidden(
+                    "APPLICATION_SCOPE_VIOLATION",
+                    $"Credential bound to application '{boundAppCode}' cannot access application '{requestedAppCode.ToUpperInvariant()}'."));
+                return;
             }
 
             // Anti-spoofing check on X-Tenant-Id header for service principals

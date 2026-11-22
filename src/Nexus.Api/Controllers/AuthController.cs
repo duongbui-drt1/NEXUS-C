@@ -9,7 +9,7 @@ using Nexus.SharedKernel.Results;
 
 namespace Nexus.Api.Controllers;
 
-public sealed record AuthorizePolicyRequest(string PermissionCode, string? ScopeType = null, string? ScopeId = null);
+public sealed record AuthorizePolicyRequest(string PermissionCode, string? ScopeType = null, string? ScopeId = null, string? ApplicationCode = null);
 
 [ApiController]
 [Route("api/v1/auth")]
@@ -244,13 +244,18 @@ public sealed class AuthController(
         var effectiveTenantId = tenantContext.TenantId ?? currentUser.TenantId;
         var isPlatformScope = currentUser.IsPlatformUser && !effectiveTenantId.HasValue;
 
+        var effectiveAppCode = !string.IsNullOrWhiteSpace(request.ApplicationCode)
+            ? request.ApplicationCode.Trim()
+            : Request.Headers["X-Application-Code"].FirstOrDefault()?.Trim() ?? currentUser.ApplicationCode;
+
         var decision = await permissionEvaluator.EvaluatePolicyAsync(new AuthorizationCheckRequest(
             currentUser.UserId.Value,
             effectiveTenantId,
             request.PermissionCode,
             isPlatformScope,
             request.ScopeType,
-            request.ScopeId), ct);
+            request.ScopeId,
+            effectiveAppCode), ct);
 
         return Ok(ApiResponse<AuthorizationDecision>.Ok(decision, ApiResultMapper.GetCorrelationId(HttpContext)));
     }

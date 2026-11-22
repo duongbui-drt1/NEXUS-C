@@ -26,10 +26,19 @@ public sealed class Role : AuditableEntity
     public string Description { get; private set; } = string.Empty;
     public RoleScopeType Scope { get; private set; }
     public bool IsSystemRole { get; private set; }
+    public string? ApplicationCode { get; private set; }
+    public bool IsSharedReusable { get; private set; }
 
     public ICollection<RolePermission> RolePermissions { get; private set; } = [];
 
-    public static Result<Role> Create(string name, string description, RoleScopeType scope, Guid? tenantId, bool isSystemRole = false)
+    public static Result<Role> Create(
+        string name,
+        string description,
+        RoleScopeType scope,
+        Guid? tenantId,
+        bool isSystemRole = false,
+        string? applicationCode = null,
+        bool isSharedReusable = false)
     {
         if (string.IsNullOrWhiteSpace(name) || name.Trim().Length > 100)
         {
@@ -46,6 +55,12 @@ public sealed class Role : AuditableEntity
             return Error.Validation("ROLE_TENANT_REQUIRED", "Custom tenant roles must belong to a tenant.");
         }
 
+        var normalizedApp = string.IsNullOrWhiteSpace(applicationCode) ? null : applicationCode.Trim().ToUpperInvariant();
+        if (normalizedApp is not null && isSharedReusable)
+        {
+            return Error.Validation("ROLE_CONFLICTING_APP_SCOPE", "An application-scoped role cannot simultaneously be marked as shared reusable across applications.");
+        }
+
         return new Role
         {
             Id = Guid.CreateVersion7(),
@@ -54,7 +69,9 @@ public sealed class Role : AuditableEntity
             NormalizedName = name.Trim().ToUpperInvariant(),
             Description = description?.Trim() ?? string.Empty,
             Scope = scope,
-            IsSystemRole = isSystemRole
+            IsSystemRole = isSystemRole,
+            ApplicationCode = normalizedApp,
+            IsSharedReusable = isSharedReusable
         };
     }
 }

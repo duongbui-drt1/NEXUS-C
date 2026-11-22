@@ -25,6 +25,8 @@ public interface ICurrentUser
 
     bool IsServicePrincipal => false;
     string? ServiceClientId => null;
+    string? ApplicationCode => null;
+    string? CredentialClass => null;
     IReadOnlyList<string> GrantedScopes => [];
 }
 

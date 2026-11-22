@@ -21,7 +21,11 @@ public sealed record RegisteredApplicationDto(
     string MinPlatformVersion,
     IReadOnlyList<string> RequiredCapabilities,
     IReadOnlyList<string> ModuleDependencies,
-    string? CompatibilityMetadataJson);
+    string? CompatibilityMetadataJson,
+    string Owner = "NEXUS Platform",
+    string TrustClassification = "FirstParty",
+    IReadOnlyList<string>? AllowedAuthMethods = null,
+    IReadOnlyList<string>? RedirectOrigins = null);
 
 public sealed record RegisterApplicationRequest(
     string Code,
@@ -33,7 +37,11 @@ public sealed record RegisterApplicationRequest(
     string MinPlatformVersion = "1.0.0",
     IReadOnlyList<string>? RequiredCapabilities = null,
     IReadOnlyList<string>? ModuleDependencies = null,
-    string? CompatibilityMetadataJson = null);
+    string? CompatibilityMetadataJson = null,
+    string? Owner = null,
+    ApplicationTrustClassification TrustClassification = ApplicationTrustClassification.FirstParty,
+    IReadOnlyList<string>? AllowedAuthMethods = null,
+    IReadOnlyList<string>? RedirectOrigins = null);
 
 public sealed record UpdateApplicationRequest(
     string Name,
@@ -44,7 +52,11 @@ public sealed record UpdateApplicationRequest(
     string MinPlatformVersion,
     IReadOnlyList<string>? RequiredCapabilities = null,
     IReadOnlyList<string>? ModuleDependencies = null,
-    string? CompatibilityMetadataJson = null);
+    string? CompatibilityMetadataJson = null,
+    string? Owner = null,
+    ApplicationTrustClassification? TrustClassification = null,
+    IReadOnlyList<string>? AllowedAuthMethods = null,
+    IReadOnlyList<string>? RedirectOrigins = null);
 
 public sealed record TenantApplicationDto(
     string ApplicationCode,
@@ -132,9 +144,13 @@ public sealed class SubscriptionService(
         foreach (var s in seeds)
         {
             if (set.Contains(s.Code)) continue;
+            var trust = s.Code == "NEXUS_C" ? ApplicationTrustClassification.Internal : ApplicationTrustClassification.FirstParty;
             var app = RegisteredApplication.Create(
                 s.Code, s.Name, s.Desc, "1.0.0", s.Channel, s.Status, "1.0.0", s.Caps, s.Deps,
-                "{\"contractVersion\":\"1.0\",\"deploymentHealthTrackedSeparately\":true}").Value;
+                "{\"contractVersion\":\"1.0\",\"deploymentHealthTrackedSeparately\":true}",
+                owner: "NEXUS Core Engineering",
+                trustClassification: trust,
+                allowedAuthMethods: ["jwt", "clerk_oidc", "oauth2_client_credentials"]).Value;
             db.Applications.Add(app);
         }
 
@@ -157,7 +173,7 @@ public sealed class SubscriptionService(
         var created = RegisteredApplication.Create(
             request.Code, request.Name, request.Description, request.CurrentVersion, request.ReleaseChannel,
             request.Status, request.MinPlatformVersion, request.RequiredCapabilities, request.ModuleDependencies,
-            request.CompatibilityMetadataJson);
+            request.CompatibilityMetadataJson, request.Owner, request.TrustClassification, request.AllowedAuthMethods, request.RedirectOrigins);
         if (created.IsFailure) return Result.Failure<RegisteredApplicationDto>(created.Error);
 
         var app = created.Value;
@@ -190,7 +206,7 @@ public sealed class SubscriptionService(
         var before = MapApp(app);
         var res = app.Update(request.Name, request.Description, request.CurrentVersion, request.ReleaseChannel,
             request.Status, request.MinPlatformVersion, request.RequiredCapabilities, request.ModuleDependencies,
-            request.CompatibilityMetadataJson);
+            request.CompatibilityMetadataJson, request.Owner, request.TrustClassification, request.AllowedAuthMethods, request.RedirectOrigins);
         if (res.IsFailure) return Result.Failure<RegisteredApplicationDto>(res.Error);
 
         await db.SaveChangesAsync(ct);
@@ -740,5 +756,6 @@ public sealed class SubscriptionService(
     private static RegisteredApplicationDto MapApp(RegisteredApplication a) => new(
         a.Id, a.Code, a.Name, a.Description, a.CurrentVersion, a.ReleaseChannel,
         a.Status.ToString(), a.MinPlatformVersion, a.GetRequiredCapabilities(),
-        a.GetModuleDependencies(), a.CompatibilityMetadataJson);
+        a.GetModuleDependencies(), a.CompatibilityMetadataJson,
+        a.Owner, a.TrustClassification.ToString(), a.GetAllowedAuthMethods(), a.GetRedirectOrigins());
 }
