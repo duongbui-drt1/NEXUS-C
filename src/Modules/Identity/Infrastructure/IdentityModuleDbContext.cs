@@ -44,9 +44,14 @@ public sealed class IdentityModuleDbContext(DbContextOptions<IdentityModuleDbCon
             e.ToTable("user_profiles", SchemaName);
             e.HasKey(x => x.Id);
             e.Property(x => x.FullName).HasMaxLength(200).IsRequired();
+            e.Property(x => x.FirstName).HasMaxLength(100);
+            e.Property(x => x.LastName).HasMaxLength(100);
             e.Property(x => x.DisplayName).HasMaxLength(150);
             e.Property(x => x.PreferredLocale).HasMaxLength(20).IsRequired();
             e.Property(x => x.TimeZone).HasMaxLength(64).IsRequired();
+            e.Property(x => x.CountryCode).HasMaxLength(8);
+            e.Property(x => x.Region).HasMaxLength(100);
+            e.Property(x => x.AdminNotes).HasMaxLength(2000);
             e.Property(x => x.RowVersion).IsRowVersion();
             e.HasIndex(x => x.UserId).IsUnique();
             e.HasOne<ApplicationUser>().WithOne().HasForeignKey<UserProfile>(x => x.UserId).OnDelete(DeleteBehavior.Restrict);

@@ -66,6 +66,43 @@ public sealed record UserDto(
     bool IsLockedOut,
     DateTimeOffset CreatedAt);
 
+public sealed record UserDetailDto(
+    Guid Id,
+    string Email,
+    string FullName,
+    string? FirstName,
+    string? LastName,
+    string? DisplayName,
+    string PreferredLocale,
+    string TimeZone,
+    string? CountryCode,
+    string? Region,
+    string? PhoneNumber,
+    string? AdminNotes,
+    bool IsActive,
+    bool IsPlatformUser,
+    bool EmailConfirmed,
+    bool IsLockedOut,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? LastSignInAt,
+    string? ClerkSubjectId,
+    string? ExternalSyncStatus,
+    IReadOnlyList<Guid> TenantIds,
+    IReadOnlyList<SessionDto> ActiveSessions);
+
+public sealed record UpdateUserProfileRequest(
+    string? FullName = null,
+    string? FirstName = null,
+    string? LastName = null,
+    string? DisplayName = null,
+    string? PreferredLocale = null,
+    string? TimeZone = null,
+    string? CountryCode = null,
+    string? Region = null,
+    string? PhoneNumber = null,
+    string? AdminNotes = null);
+
 public sealed record SessionDto(
     Guid Id,
     Guid UserId,
@@ -220,6 +257,8 @@ public interface IAuthService
     Task<Result<UserDto>> CreateUserAsync(CreateUserRequest request, CancellationToken ct = default);
     Task<Result<UserDto>> InviteUserToCurrentTenantAsync(InviteUserRequest request, CancellationToken ct = default);
     Task<Result<PagedResult<UserDto>>> ListUsersAsync(PagedRequest paging, CancellationToken ct = default);
+    Task<Result<UserDetailDto>> GetUserDetailAsync(Guid userId, CancellationToken ct = default);
+    Task<Result<UserDetailDto>> UpdateUserProfileAsync(Guid userId, UpdateUserProfileRequest request, CancellationToken ct = default);
     Task<Result> DisableUserAsync(Guid userId, string reason, CancellationToken ct = default);
     Task<Result> EnableUserAsync(Guid userId, CancellationToken ct = default);
 }
@@ -331,6 +370,8 @@ public sealed class AuthService(
         db.UserSessions.Add(session);
         db.RefreshTokens.Add(refreshEntity);
         db.LoginAttempts.Add(LoginAttempt.Record(user.Id, email, true, null, currentUser.IpAddress, currentUser.UserAgent, now));
+        user.LastSignInAt = now;
+        user.UpdatedAt = now;
         await db.SaveChangesAsync(ct);
 
         var (accessToken, accessExp) = tokenGenerator.GenerateAccessToken(user, session.Id, targetTenantId, scope);
@@ -862,6 +903,143 @@ public sealed class AuthService(
             .ToListAsync(ct);
 
         return new PagedResult<UserDto>(items, paging.Page, paging.PageSize, total);
+    }
+
+    public async Task<Result<UserDetailDto>> GetUserDetailAsync(Guid userId, CancellationToken ct = default)
+    {
+        if (currentUser.IsAuthenticated && !currentUser.IsPlatformUser)
+        {
+            var scopeCheck = await EnsureTargetUserManageableByTenantAdminAsync(userId, ct);
+            if (scopeCheck.IsFailure)
+            {
+                return Result.Failure<UserDetailDto>(scopeCheck.Error);
+            }
+        }
+
+        var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId, ct);
+        if (user is null) return Error.NotFound("USER_NOT_FOUND", "User not found.");
+
+        var profile = await db.UserProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.UserId == userId, ct);
+        var clerkIdentity = await db.ExternalIdentities.AsNoTracking()
+            .FirstOrDefaultAsync(e => e.UserId == userId && e.Provider == "Clerk", ct);
+
+        var now = clock.UtcNow;
+        var activeSessions = await db.UserSessions.AsNoTracking()
+            .Where(s => s.UserId == userId && s.RevokedAt == null && s.ExpiresAt > now)
+            .OrderByDescending(s => s.LastSeenAt)
+            .Take(20)
+            .Select(s => new SessionDto(s.Id, s.UserId, s.TenantId, s.IpAddress, s.UserAgent, s.CreatedAt, s.LastSeenAt, s.ExpiresAt, s.RevokedAt != null))
+            .ToListAsync(ct);
+
+        var tenantIds = await tenantValidator.GetAccessibleTenantIdsAsync(userId, ct);
+        if (!currentUser.IsPlatformUser && tenantContext.HasTenant)
+        {
+            tenantIds = tenantIds.Where(t => t == tenantContext.TenantId!.Value).ToList();
+        }
+
+        return new UserDetailDto(
+            user.Id,
+            user.Email ?? string.Empty,
+            profile?.FullName ?? user.Email ?? string.Empty,
+            profile?.FirstName,
+            profile?.LastName,
+            profile?.DisplayName,
+            profile?.PreferredLocale ?? "en-US",
+            profile?.TimeZone ?? "UTC",
+            profile?.CountryCode,
+            profile?.Region,
+            user.PhoneNumber,
+            profile?.AdminNotes,
+            user.IsActive,
+            user.IsPlatformUser,
+            user.EmailConfirmed,
+            user.LockoutEnd.HasValue && user.LockoutEnd.Value > now,
+            user.CreatedAt,
+            user.UpdatedAt,
+            user.LastSignInAt,
+            clerkIdentity?.ProviderSubject,
+            clerkIdentity is null ? "LocalOnly" : "Linked",
+            tenantIds,
+            activeSessions);
+    }
+
+    public async Task<Result<UserDetailDto>> UpdateUserProfileAsync(Guid userId, UpdateUserProfileRequest request, CancellationToken ct = default)
+    {
+        if (currentUser.IsAuthenticated && !currentUser.IsPlatformUser)
+        {
+            var scopeCheck = await EnsureTargetUserManageableByTenantAdminAsync(userId, ct);
+            if (scopeCheck.IsFailure)
+            {
+                return Result.Failure<UserDetailDto>(scopeCheck.Error);
+            }
+        }
+
+        var user = await userManager.FindByIdAsync(userId.ToString("D"));
+        if (user is null) return Error.NotFound("USER_NOT_FOUND", "User not found.");
+
+        var profile = await db.UserProfiles.FirstOrDefaultAsync(p => p.UserId == userId, ct);
+        if (profile is null)
+        {
+            profile = UserProfile.Create(userId, request.FullName ?? user.Email ?? "User", request.DisplayName);
+            db.UserProfiles.Add(profile);
+        }
+
+        var before = new
+        {
+            profile.FullName,
+            profile.FirstName,
+            profile.LastName,
+            profile.DisplayName,
+            profile.PreferredLocale,
+            profile.TimeZone,
+            profile.CountryCode,
+            profile.Region,
+            user.PhoneNumber
+        };
+
+        var now = clock.UtcNow;
+        profile.Update(
+            request.FullName,
+            request.DisplayName,
+            request.PreferredLocale,
+            request.TimeZone,
+            request.FirstName,
+            request.LastName,
+            request.CountryCode,
+            request.Region,
+            request.AdminNotes);
+        profile.SetUpdatedAudit(currentUser.UserId, now);
+
+        if (request.PhoneNumber is not null)
+        {
+            user.PhoneNumber = string.IsNullOrWhiteSpace(request.PhoneNumber) ? null : request.PhoneNumber.Trim();
+            user.UpdatedAt = now;
+            await userManager.UpdateAsync(user);
+        }
+
+        await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "identity.user.profile_update",
+            "UserProfile",
+            userId.ToString("D"),
+            tenantContext.TenantId,
+            "Success",
+            BeforeState: before,
+            AfterState: new
+            {
+                profile.FullName,
+                profile.FirstName,
+                profile.LastName,
+                profile.DisplayName,
+                profile.PreferredLocale,
+                profile.TimeZone,
+                profile.CountryCode,
+                profile.Region,
+                user.PhoneNumber
+            }), ct);
+
+        return await GetUserDetailAsync(userId, ct);
     }
 
     public async Task<Result> DisableUserAsync(Guid userId, string reason, CancellationToken ct = default)

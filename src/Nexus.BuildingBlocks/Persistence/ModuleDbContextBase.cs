@@ -100,8 +100,8 @@ public abstract class ModuleDbContextBase : DbContext
                 var ctxBypassProp = Expression.Property(Expression.Constant(this), nameof(IsPlatformBypass));
 
                 var hasValue = Expression.Property(ctxTenantProp, nameof(Nullable<Guid>.HasValue));
-                var value = Expression.Property(ctxTenantProp, nameof(Nullable<Guid>.Value));
-                var tenantMatches = Expression.AndAlso(hasValue, Expression.Equal(tenantProp, value));
+                var nullableTenantProp = Expression.Convert(tenantProp, typeof(Guid?));
+                var tenantMatches = Expression.AndAlso(hasValue, Expression.Equal(nullableTenantProp, ctxTenantProp));
                 var body = Expression.OrElse(ctxBypassProp, tenantMatches);
 
                 if (typeof(ISoftDeletable).IsAssignableFrom(clrType))

@@ -11,6 +11,7 @@ public sealed class ApplicationUser : IdentityUser<Guid>
     public bool MfaEnforced { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? LastSignInAt { get; set; }
     public DateTimeOffset? DisabledAt { get; set; }
     public string? DisabledReason { get; set; }
 }
@@ -21,9 +22,14 @@ public sealed class UserProfile : AuditableEntity
 
     public Guid UserId { get; private set; }
     public string FullName { get; private set; } = string.Empty;
+    public string? FirstName { get; private set; }
+    public string? LastName { get; private set; }
     public string? DisplayName { get; private set; }
     public string PreferredLocale { get; private set; } = "en-US";
     public string TimeZone { get; private set; } = "UTC";
+    public string? CountryCode { get; private set; }
+    public string? Region { get; private set; }
+    public string? AdminNotes { get; private set; }
 
     public static UserProfile Create(Guid userId, string fullName, string? displayName = null)
         => new()
@@ -34,12 +40,26 @@ public sealed class UserProfile : AuditableEntity
             DisplayName = string.IsNullOrWhiteSpace(displayName) ? fullName.Trim() : displayName.Trim()
         };
 
-    public void Update(string fullName, string? displayName, string? preferredLocale, string? timeZone)
+    public void Update(
+        string? fullName,
+        string? displayName,
+        string? preferredLocale,
+        string? timeZone,
+        string? firstName = null,
+        string? lastName = null,
+        string? countryCode = null,
+        string? region = null,
+        string? adminNotes = null)
     {
         if (!string.IsNullOrWhiteSpace(fullName)) FullName = fullName.Trim();
-        if (!string.IsNullOrWhiteSpace(displayName)) DisplayName = displayName.Trim();
+        if (firstName is not null) FirstName = string.IsNullOrWhiteSpace(firstName) ? null : firstName.Trim();
+        if (lastName is not null) LastName = string.IsNullOrWhiteSpace(lastName) ? null : lastName.Trim();
+        if (displayName is not null) DisplayName = string.IsNullOrWhiteSpace(displayName) ? FullName : displayName.Trim();
         if (!string.IsNullOrWhiteSpace(preferredLocale)) PreferredLocale = preferredLocale.Trim();
         if (!string.IsNullOrWhiteSpace(timeZone)) TimeZone = timeZone.Trim();
+        if (countryCode is not null) CountryCode = string.IsNullOrWhiteSpace(countryCode) ? null : countryCode.Trim().ToUpperInvariant();
+        if (region is not null) Region = string.IsNullOrWhiteSpace(region) ? null : region.Trim();
+        if (adminNotes is not null) AdminNotes = string.IsNullOrWhiteSpace(adminNotes) ? null : adminNotes.Trim();
     }
 }
 
