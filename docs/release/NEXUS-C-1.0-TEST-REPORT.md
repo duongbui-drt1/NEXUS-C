@@ -1,8 +1,9 @@
 # NEXUS C 1.0 — Test, Drill & Verification Report
 
 **Release:** `NEXUS C 1.0` (`release/nexus-c-1.0-foundation`)  
-**Verification Host:** macOS (Apple Silicon) · .NET 10.0 LTS · PostgreSQL 17.12 · Node 24 LTS  
-**Note on Docker Local Gate:** Docker CLI / daemon is **not installed** on this local workstation; container builds (`Dockerfile`, `Dockerfile.migrator`, `nexus-c-console/Dockerfile`) could not be executed locally and are configured in `.github/workflows/ci.yml` (`docker-build-verify`) for automated Linux CI execution prior to release tagging.
+**Verification Environments:**
+- **Local Workstation:** macOS (Apple Silicon) · .NET 10.0 LTS · PostgreSQL 17.12 · Node 24 LTS (all unit, architecture, RLS integration, security, API, frontend tests, and live isolated DB drills).
+- **GitHub Actions Linux CI (`ubuntu-latest` + `postgres:17.4-alpine`):** Run [`45046431690`](https://github.com/duongbui-drt1/NEXUS-C/actions/runs/45046431690) — **ALL 3 JOBS PASSED** (`backend-ci`, `frontend-ci`, and `docker-build-verify` for `Dockerfile`, `Dockerfile.migrator`, and `nexus-c-console/Dockerfile`). Note: Docker CLI is not installed on the local macOS workstation, so container builds were executed and verified in GitHub Actions Linux CI (`docker-build-verify`).
 
 ---
 
@@ -24,7 +25,8 @@
 | Frontend Production Build | `cd nexus-c-console && npm run build` | **PASS** (334 ms, ~103.8 KB gzipped initial JS) | — | 0 | 0 |
 | .NET NuGet Vulnerability Scan | `dotnet list NEXUS.sln package --vulnerable --include-transitive` | **PASS** (0 vulnerable packages across 21 projects) | — | 0 | 0 |
 | Frontend Production Audit | `cd nexus-c-console && npm audit --omit=dev` | **PASS** (0 vulnerabilities) | — | 0 | 0 |
-| Docker Image Builds (`Dockerfile`, `Dockerfile.migrator`, `nexus-c-console/Dockerfile`) | `docker build` | **NOT RUN LOCALLY** (Docker CLI not installed on host; wired in `.github/workflows/ci.yml`) | — | — | — |
+| Docker Image Builds (`Dockerfile`, `Dockerfile.migrator`, `nexus-c-console/Dockerfile`) | `docker build` (GitHub Actions `docker-build-verify`, Run `45046431690`) | **PASS** (1m 10s on `ubuntu-latest`; local host lacks Docker CLI) | **3 / 3 images** | 0 | 0 |
+| Full GitHub Actions CI (`NEXUS Foundation CI`) | Run [`45046431690`](https://github.com/duongbui-drt1/NEXUS-C/actions/runs/45046431690) (`backend-ci`, `frontend-ci`, `docker-build-verify`) | **PASS** (all 3 jobs green on `155bb00`) | **3 / 3 jobs** | 0 | 0 |
 
 ---
 

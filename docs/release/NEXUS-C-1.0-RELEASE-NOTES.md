@@ -58,7 +58,7 @@ NEXUS C 1.0 completes and freezes the shared enterprise platform foundation for 
 
 ## Known Documented Limitations
 
-1. **Docker Build Execution in Local macOS Host:** Docker CLI/daemon is not installed on the local build workstation used during this release preparation. All Dockerfiles (`Dockerfile`, `Dockerfile.migrator`, `nexus-c-console/Dockerfile`) and `docker-compose.yml` were audited and hardened, and a `docker-build-verify` job was added to `.github/workflows/ci.yml` for execution in GitHub Actions Linux CI before creating the `v1.0.0` Git tag.
-2. **Multi-Instance Node-Local Components:** Rate limiting (`ASP.NET Core RateLimiter`) and background job heartbeats (`BackgroundJobTracker`) are in-process per replica; multi-replica production deployments should enforce global rate limits at the API Gateway/Redis layer.
+1. **Multi-Instance Node-Local Components:** Rate limiting (`ASP.NET Core RateLimiter`) and background job heartbeats (`BackgroundJobTracker`) are in-process per replica; multi-replica production deployments should enforce global rate limits at the API Gateway/Redis layer.
+2. **Docker Compose End-to-End Runtime Verification:** All three container images (`Dockerfile`, `Dockerfile.migrator`, `nexus-c-console/Dockerfile`) were built and verified passing in GitHub Actions Linux CI (`docker-build-verify`, Run `45046431690`). Full multi-container `docker compose up` runtime smoke testing (including Redis, RabbitMQ, and MinIO containers together) could not be executed on the local macOS workstation (Docker CLI absent) and should be run in staging before production cutover.
 3. **Symmetric JWT Signing:** HS256 is active in 1.0; RS256/ES256 + JWKS key rotation is planned for 1.1 multi-service federation.
 4. **Deferred Features:** Live OIDC/SAML callbacks, TOTP MFA enrollment UI, dynamic Console rate-limit policy editor, REST HTTP gateway request logs, and outbound HTTP webhook dispatcher worker are explicitly deferred past 1.0.
