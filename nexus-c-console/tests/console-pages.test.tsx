@@ -276,7 +276,7 @@ describe('NEXUS C Console — Auth, Fail-Closed RBAC, Tenants, API Management & 
     expect(screen.queryByRole('link', { name: 'Tenants' })).not.toBeInTheDocument();
   });
 
-  it('renders live OpenAPI endpoints, live Scoped API Keys tab, and honest Not Available panel for deferred Rate Limiting', async () => {
+  it('renders live OpenAPI endpoints, live Scoped API Keys tab, live Distributed Rate Limiting policies, and live API Request Logs', async () => {
     tokenStore.setFromAuthResponse({
       accessToken: 'admin-jwt',
       accessTokenExpiresAt: new Date(Date.now() + 900_000).toISOString(),
@@ -300,7 +300,13 @@ describe('NEXUS C Console — Auth, Fail-Closed RBAC, Tenants, API Management & 
             scope: 'platform',
             isPlatformUser: true,
             roles: ['PlatformSuperAdmin'],
-            permissions: ['platform.api.read', 'platform.api.manage', 'platform.operations.read'],
+            permissions: [
+              'platform.api.read',
+              'platform.api.manage',
+              'platform.rate-limits.manage',
+              'platform.api-logs.read',
+              'platform.operations.read',
+            ],
           },
           meta: { correlationId: 'c-perm' },
         });
@@ -328,6 +334,50 @@ describe('NEXUS C Console — Auth, Fail-Closed RBAC, Tenants, API Management & 
           meta: { correlationId: 'c-keys' },
         });
       }
+      if (url.endsWith('/api/v1/platform/rate-limits')) {
+        return jsonRes([
+          {
+            id: 'rl-1',
+            name: 'auth-anonymous-login',
+            routePattern: '/api/v1/auth/*',
+            scopeType: 'AnonymousIp',
+            permitLimit: 60,
+            windowSeconds: 60,
+            burstLimit: 0,
+            isEnabled: true,
+            priority: 10,
+            description: 'Auth login protection',
+            createdAt: '2026-11-22T10:00:00Z',
+            updatedAt: null,
+          },
+        ]);
+      }
+      if (url.includes('/api/v1/platform/api-logs')) {
+        return jsonRes({
+          items: [
+            {
+              id: 'log-1',
+              timestamp: '2026-11-22T10:05:00Z',
+              method: 'GET',
+              normalizedRoute: '/api/v1/platform/tenants',
+              statusCode: 200,
+              durationMs: 12.4,
+              correlationId: 'corr-api-log-123456',
+              applicationCode: 'NEXUS_C',
+              serviceClientId: null,
+              tenantId: null,
+              userId: 'u-admin',
+              actorType: 'Human',
+              rateLimitDecision: 'Allowed',
+              rateLimitPolicy: 'api-human-default',
+              errorCode: null,
+            },
+          ],
+          totalCount: 1,
+          page: 1,
+          pageSize: 25,
+        });
+      }
       if (url.endsWith('/openapi/v1.json')) {
         return jsonRes({
           openapi: '3.1.1',
@@ -352,8 +402,12 @@ describe('NEXUS C Console — Auth, Fail-Closed RBAC, Tenants, API Management & 
     expect(screen.getByText(/nxk_abc12345/)).toBeInTheDocument();
 
     await user.click(screen.getByRole('tab', { name: 'Rate Limiting' }));
-    expect(await screen.findByText('Dynamic Per-Client Rate Limiting Policies')).toBeInTheDocument();
-    expect(screen.getByText('Not Available')).toBeInTheDocument();
+    expect(await screen.findByText('auth-anonymous-login')).toBeInTheDocument();
+    expect(screen.getByText('/api/v1/auth/*')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('tab', { name: 'API Logs' }));
+    expect(await screen.findByText(/12\.4 ms/)).toBeInTheDocument();
+    expect(screen.getAllByText('Allowed').length).toBeGreaterThanOrEqual(2);
   });
 
   it('renders live Operations Console with Background Jobs & DLQ retry confirmation', async () => {
@@ -604,5 +658,182 @@ describe('NEXUS C Console — Auth, Fail-Closed RBAC, Tenants, API Management & 
 
     expect(await screen.findByText('platform.tenant.create')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /xóa|delete|sửa|edit/i })).not.toBeInTheDocument();
+  });
+
+  it('renders Users Clerk Sync Status, opens Safe Profile Editor (zero role fields), and renders Subscriptions FX Reference Rates', async () => {
+    const profileUpdateSpy = vi.fn();
+    tokenStore.setFromAuthResponse({
+      accessToken: 'admin-jwt',
+      accessTokenExpiresAt: new Date(Date.now() + 900_000).toISOString(),
+      refreshToken: 'admin-refresh',
+      refreshTokenExpiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      userId: 'u-admin',
+      email: 'admin@nexus.local',
+      tenantId: null,
+      scope: 'platform',
+      sessionId: 'sess-wr',
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/api/v1/auth/permissions')) {
+        return jsonRes({
+          success: true,
+          data: {
+            userId: 'u-admin',
+            tenantId: null,
+            scope: 'platform',
+            isPlatformUser: true,
+            roles: ['PlatformSuperAdmin'],
+            permissions: [
+              'platform.users.read',
+              'platform.users.manage',
+              'platform.users.profile.update',
+              'platform.subscriptions.read',
+              'platform.subscriptions.manage',
+              'platform.subscriptions.delete',
+              'platform.reference-data.manage',
+            ],
+          },
+          meta: { correlationId: 'c-perm' },
+        });
+      }
+      if (url.endsWith('/api/v1/platform/users/clerk/sync-status')) {
+        return jsonRes({
+          success: true,
+          data: {
+            appId: 'app_3MTU0OPO0cFJboGQYPkeOLjZohj',
+            isEnabled: false,
+            hasSecretKey: false,
+            hasWebhookSecret: false,
+            linkedIdentitiesCount: 2,
+            failedSyncCount: 0,
+            lastWebhookProcessedAt: null,
+          },
+          meta: { correlationId: 'c-clerk' },
+        });
+      }
+      if (url.endsWith('/api/v1/platform/users/u-target/profile') && method === 'PUT') {
+        profileUpdateSpy(init?.body);
+        return jsonRes({
+          success: true,
+          data: { id: 'u-target', email: 'cfo@demo.local', fullName: 'CFO Updated' },
+          meta: { correlationId: 'c-prof' },
+        });
+      }
+      if (url.endsWith('/api/v1/platform/users/u-target')) {
+        return jsonRes({
+          success: true,
+          data: {
+            id: 'u-target',
+            email: 'cfo@demo.local',
+            fullName: 'CFO Demo',
+            firstName: 'Minh',
+            lastName: 'Tran',
+            phoneNumber: '+84901234567',
+            jobTitle: 'Chief Financial Officer',
+            countryCode: 'VN',
+            region: 'APAC',
+            timeZone: 'Asia/Ho_Chi_Minh',
+            locale: 'vi-VN',
+            avatarUrl: null,
+            adminNotes: 'Verified executive account',
+            isActive: true,
+            isPlatformUser: false,
+            emailConfirmed: true,
+            isLockedOut: false,
+            createdAt: '2026-11-22T00:00:00Z',
+            lastSignInAt: null,
+            clerkSubject: 'user_clerk_999',
+            clerkSyncStatus: 'Synced',
+            tenantMemberships: ['t-1'],
+            activeSessionCount: 1,
+          },
+          meta: { correlationId: 'c-ud' },
+        });
+      }
+      if (url.includes('/api/v1/platform/users')) {
+        return jsonRes({
+          success: true,
+          data: {
+            items: [
+              {
+                id: 'u-target',
+                email: 'cfo@demo.local',
+                fullName: 'CFO Demo',
+                isActive: true,
+                isPlatformUser: false,
+                emailConfirmed: true,
+                isLockedOut: false,
+                createdAt: '2026-11-22T00:00:00Z',
+              },
+            ],
+            page: 1,
+            pageSize: 15,
+            totalCount: 1,
+            totalPages: 1,
+            hasNext: false,
+            hasPrevious: false,
+          },
+          meta: { correlationId: 'c-ul' },
+        });
+      }
+      if (url.includes('/api/v1/platform/reference-data/')) {
+        return jsonRes([{ id: 'ref-vn', category: 'country', code: 'VN', label: 'Vietnam', isActive: true, sortOrder: 1, localizedLabelsJson: null, metadataJson: null }]);
+      }
+      if (url.includes('/api/v1/platform/fx/rates')) {
+        return jsonRes([
+          {
+            id: 'fx-1',
+            baseCurrency: 'USD',
+            quoteCurrency: 'VND',
+            rate: 25450.5,
+            provider: 'FrankfurterECB',
+            observedAt: '2026-11-22T00:00:00Z',
+            fetchedAt: '2026-11-22T01:00:00Z',
+            staleAfter: '2026-11-23T01:00:00Z',
+            isStale: false,
+            sourceReference: null,
+            disclaimer: 'Indicative FX reference rate — not a settlement rate.',
+          },
+        ]);
+      }
+      if (url.includes('/api/v1/platform/subscriptions/plans')) {
+        return jsonRes({
+          success: true,
+          data: [
+            {
+              id: 'pl-1',
+              code: 'ENTERPRISE_V1',
+              name: 'Enterprise Cloud',
+              description: 'Full ecosystem tier',
+              monthlyPrice: 299,
+              currency: 'USD',
+              isActive: true,
+              features: [{ featureCode: 'NEXUS_F', isEnabled: true, quotaLimit: 1000 }],
+            },
+          ],
+          meta: { correlationId: 'c-pl' },
+        });
+      }
+      return jsonRes({ success: true, data: [], meta: { correlationId: 'c-empty' } });
+    });
+
+    const user = userEvent.setup();
+    renderAt('/core/users');
+
+    expect(await screen.findByText(/app_3MTU0OPO0cFJboGQYPkeOLjZohj/)).toBeInTheDocument();
+    expect(await screen.findByText('CFO Demo')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Hồ sơ/i }));
+    expect(await screen.findByText(/Clerk: user_clerk_999/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Lưu hồ sơ an toàn' }));
+    await waitFor(() => expect(profileUpdateSpy).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole('link', { name: 'Subscriptions' }));
+    expect(await screen.findByText(/1 USD = 25450\.5 VND/)).toBeInTheDocument();
+    expect(screen.getByText(/Indicative FX reference rate — not a settlement rate\./)).toBeInTheDocument();
   });
 });

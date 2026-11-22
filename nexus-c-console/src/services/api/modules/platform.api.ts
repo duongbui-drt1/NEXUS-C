@@ -1,20 +1,32 @@
 import type {
+  AiCapabilityPolicyDto,
   ApiKeyDto,
   ApiKeyWithSecretDto,
+  ApiRequestLogPage,
   AuditEventDto,
   BackgroundJobStatusDto,
   ConnectionDto,
+  ConnectionTestResultDto,
+  CurrencyDto,
   DeadLetterMessageDto,
+  EmailDeliveryDto,
+  EmailProviderStatusDto,
+  EmailSuppressionDto,
   EntitlementEvaluationDto,
   FeatureFlagDto,
+  FxRateDto,
+  FxRefreshResultDto,
   InboxMessageDto,
   NotificationDto,
   OpenApiDocument,
   OutboxMessageDto,
   PagedResult,
+  PlanDeletionResultDto,
   PlanDto,
   PlanFeatureInput,
   ProviderDto,
+  RateLimitPolicyDto,
+  ReferenceDataItemDto,
   RegisteredApplicationDto,
   ServiceClientDto,
   ServiceClientWithSecretDto,
@@ -46,6 +58,12 @@ export const subscriptionsApi = {
     currency: string;
     features: PlanFeatureInput[];
   }) => apiRequest<PlanDto>('/api/v1/platform/subscriptions/plans', { method: 'POST', body }),
+
+  deleteOrArchivePlan: (planId: string, reason?: string) =>
+    apiRequest<PlanDeletionResultDto>(`/api/v1/platform/subscriptions/plans/${encodeURIComponent(planId)}`, {
+      method: 'DELETE',
+      query: reason ? { reason } : undefined,
+    }),
 
   assignPlan: (body: { tenantId: string; planId: string; startsAt: string; endsAt: string; seatCount: number }) =>
     apiRequest<TenantSubscriptionDto>('/api/v1/platform/subscriptions/assign', { method: 'POST', body }),
@@ -118,6 +136,50 @@ export const apiManagementApi = {
 
   revokeKey: (id: string) =>
     apiRequest<void>(`/api/v1/platform/api-keys/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  listRateLimits: (signal?: AbortSignal) =>
+    apiRequest<RateLimitPolicyDto[]>('/api/v1/platform/rate-limits', { signal }),
+
+  createRateLimit: (body: {
+    name: string;
+    routePattern: string;
+    scopeType: string;
+    permitLimit: number;
+    windowSeconds: number;
+    burstLimit?: number;
+    isEnabled?: boolean;
+    priority?: number;
+    description?: string;
+  }) => apiRequest<RateLimitPolicyDto>('/api/v1/platform/rate-limits', { method: 'POST', body }),
+
+  updateRateLimit: (
+    id: string,
+    body: {
+      routePattern: string;
+      scopeType: string;
+      permitLimit: number;
+      windowSeconds: number;
+      burstLimit: number;
+      isEnabled: boolean;
+      priority: number;
+      description?: string | null;
+    },
+  ) => apiRequest<RateLimitPolicyDto>(`/api/v1/platform/rate-limits/${encodeURIComponent(id)}`, { method: 'PUT', body }),
+
+  deleteRateLimit: (id: string) =>
+    apiRequest<void>(`/api/v1/platform/rate-limits/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  queryApiLogs: (
+    query: {
+      route?: string;
+      statusCode?: number;
+      correlationId?: string;
+      rateLimitDecision?: string;
+      page?: number;
+      pageSize?: number;
+    },
+    signal?: AbortSignal,
+  ) => apiRequest<ApiRequestLogPage>('/api/v1/platform/api-logs', { query, signal }),
 };
 
 export const operationsApi = {
@@ -182,8 +244,20 @@ export const integrationsApi = {
   listConnections: (signal?: AbortSignal) =>
     apiRequest<ConnectionDto[]>('/api/v1/platform/integrations/connections', { signal }),
 
-  createConnection: (body: { providerId: string; name: string; credentialReference: string; maxRetries: number; timeoutSeconds: number }) =>
+  createConnection: (body: { providerId: string; name: string; credentialReference: string; maxRetries: number; timeoutSeconds: number; applicationCode?: string }) =>
     apiRequest<ConnectionDto>('/api/v1/platform/integrations/connections', { method: 'POST', body }),
+
+  testConnection: (id: string) =>
+    apiRequest<ConnectionTestResultDto>(`/api/v1/platform/integrations/connections/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+
+  disableConnection: (id: string) =>
+    apiRequest<ConnectionDto>(`/api/v1/platform/integrations/connections/${encodeURIComponent(id)}/disable`, { method: 'POST' }),
+
+  reconnectConnection: (id: string) =>
+    apiRequest<ConnectionDto>(`/api/v1/platform/integrations/connections/${encodeURIComponent(id)}/reconnect`, { method: 'POST' }),
+
+  deleteConnection: (id: string) =>
+    apiRequest<void>(`/api/v1/platform/integrations/connections/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   listSyncLogs: (connectionId: string, signal?: AbortSignal) =>
     apiRequest<SyncLogDto[]>(`/api/v1/platform/integrations/connections/${encodeURIComponent(connectionId)}/sync-logs`, { signal }),
@@ -214,6 +288,66 @@ export const integrationsApi = {
   retryWebhookDelivery: (deliveryId: string) =>
     apiRequest<WebhookDeliveryDto>(`/api/v1/platform/integrations/webhooks/deliveries/${encodeURIComponent(deliveryId)}/retry`, {
       method: 'POST',
+    }),
+
+  dispatchWebhook: (webhookId: string, body: { payloadJson: string; maxAttempts?: number }) =>
+    apiRequest<WebhookDeliveryDto>(`/api/v1/platform/integrations/webhooks/${encodeURIComponent(webhookId)}/dispatch`, {
+      method: 'POST',
+      body,
+    }),
+
+  listAiPolicies: (signal?: AbortSignal) =>
+    apiRequest<AiCapabilityPolicyDto[]>('/api/v1/platform/integrations/ai/policies', { signal }),
+
+  upsertAiPolicy: (body: {
+    capabilityCode: string;
+    isEnabled: boolean;
+    killSwitchActive: boolean;
+    requireHumanApproval: boolean;
+    monthlyTokenBudget: number;
+    allowedTools?: string | null;
+    promptTemplateVersion?: string;
+    dataClassification?: string;
+  }) => apiRequest<AiCapabilityPolicyDto>('/api/v1/platform/integrations/ai/policies', { method: 'PUT', body }),
+};
+
+export const emailApi = {
+  getStatus: (signal?: AbortSignal) =>
+    apiRequest<EmailProviderStatusDto>('/api/v1/platform/email/status', { signal }),
+
+  listDeliveries: (query: { page?: number; pageSize?: number; status?: string }, signal?: AbortSignal) =>
+    apiRequest<PagedResult<EmailDeliveryDto>>('/api/v1/platform/email/deliveries', { query, signal }),
+
+  listSuppressions: (signal?: AbortSignal) =>
+    apiRequest<EmailSuppressionDto[]>('/api/v1/platform/email/suppressions', { signal }),
+
+  send: (body: { to: string; subject: string; body: string; isHtml?: boolean; idempotencyKey?: string }) =>
+    apiRequest<EmailDeliveryDto>('/api/v1/platform/email/send', { method: 'POST', body }),
+};
+
+export const referenceDataApi = {
+  listByCategory: (category: string, search?: string, signal?: AbortSignal) =>
+    apiRequest<ReferenceDataItemDto[]>(`/api/v1/platform/reference-data/${encodeURIComponent(category)}`, {
+      query: search ? { search } : undefined,
+      signal,
+    }),
+
+  listCurrencies: (search?: string, signal?: AbortSignal) =>
+    apiRequest<CurrencyDto[]>('/api/v1/platform/currencies', {
+      query: search ? { search } : undefined,
+      signal,
+    }),
+
+  getFxRates: (baseCurrency = 'USD', signal?: AbortSignal) =>
+    apiRequest<FxRateDto[]>('/api/v1/platform/fx/rates', {
+      query: { baseCurrency },
+      signal,
+    }),
+
+  refreshFxRates: (baseCurrency = 'USD') =>
+    apiRequest<FxRefreshResultDto>('/api/v1/platform/fx/refresh', {
+      method: 'POST',
+      query: { baseCurrency },
     }),
 };
 

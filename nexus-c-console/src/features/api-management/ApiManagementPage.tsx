@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { KeyRound, Play, Plus, RefreshCw, RotateCw, Trash2 } from 'lucide-react';
 import type { OpenApiOperation, WebhookDto } from '../../types/api';
 import { PageHeader } from '../../components/layout/PageLayout';
-import { Badge, EmptyState, ErrorState, LoadingState, NotAvailablePanel, useToast } from '../../components/feedback/Feedback';
+import { Badge, EmptyState, ErrorState, LoadingState, useToast } from '../../components/feedback/Feedback';
 import { ConfirmDialog, Dialog } from '../../components/dialogs/Dialog';
 import { apiRequest } from '../../services/api/client';
 import { apiManagementApi, integrationsApi, systemApi } from '../../services/api/modules/platform.api';
@@ -41,6 +41,8 @@ export default function ApiManagementPage() {
   const { notify } = useToast();
 
   const canManageApi = auth.hasPermission('platform.api.manage');
+  const canManageRateLimits = auth.hasPermission('platform.rate-limits.manage') || canManageApi;
+  const canReadApiLogs = auth.hasPermission('platform.api-logs.read') || auth.hasPermission('platform.api.read');
   const canManageIntegrations = auth.hasPermission('platform.integrations.manage');
 
   const activeTab: ApiTab =
@@ -74,6 +76,18 @@ export default function ApiManagementPage() {
   const [whSecretRef, setWhSecretRef] = useState('vault://nexus/webhooks/signing-key');
   const [selectedWebhook, setSelectedWebhook] = useState<WebhookDto | null>(null);
   const [deleteWebhookId, setDeleteWebhookId] = useState<string | null>(null);
+
+  // Distributed Rate Limiting policy form
+  const [rlName, setRlName] = useState('');
+  const [rlRoute, setRlRoute] = useState('/api/v1/*');
+  const [rlScope, setRlScope] = useState('HumanSession');
+  const [rlPermit, setRlPermit] = useState('120');
+  const [rlWindow, setRlWindow] = useState('60');
+
+  // API Request Logs filters
+  const [logRouteFilter, setLogRouteFilter] = useState('');
+  const [logDecisionFilter, setLogDecisionFilter] = useState('');
+  const [logPage, setLogPage] = useState(1);
 
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
@@ -114,6 +128,54 @@ export default function ApiManagementPage() {
     queryFn: ({ signal }) => integrationsApi.listWebhookDeliveries(selectedWebhook!.id, signal),
     enabled: activeTab === 'webhooks' && Boolean(selectedWebhook?.id),
     retry: false,
+  });
+
+  const rateLimitsQuery = useQuery({
+    queryKey: queryKeys.rateLimits,
+    queryFn: ({ signal }) => apiManagementApi.listRateLimits(signal),
+    enabled: activeTab === 'rate-limits',
+    retry: false,
+  });
+
+  const logQueryParams = {
+    route: logRouteFilter.trim() || undefined,
+    rateLimitDecision: logDecisionFilter || undefined,
+    page: logPage,
+    pageSize: 25,
+  };
+  const apiLogsQuery = useQuery({
+    queryKey: queryKeys.apiLogs(logQueryParams),
+    queryFn: ({ signal }) => apiManagementApi.queryApiLogs(logQueryParams, signal),
+    enabled: activeTab === 'logs' && canReadApiLogs,
+    retry: false,
+  });
+
+  const createRateLimitMutation = useMutation({
+    mutationFn: () =>
+      apiManagementApi.createRateLimit({
+        name: rlName.trim(),
+        routePattern: rlRoute.trim(),
+        scopeType: rlScope,
+        permitLimit: Number(rlPermit),
+        windowSeconds: Number(rlWindow),
+        isEnabled: true,
+        priority: 50,
+      }),
+    onSuccess: (p) => {
+      notify(`Đã tạo chính sách Rate Limit "${p.name}".`, 'success');
+      setRlName('');
+      void queryClient.invalidateQueries({ queryKey: queryKeys.rateLimits });
+    },
+    onError: (err) => notify(getErrorMessage(err), 'danger'),
+  });
+
+  const deleteRateLimitMutation = useMutation({
+    mutationFn: (id: string) => apiManagementApi.deleteRateLimit(id),
+    onSuccess: () => {
+      notify('Đã xóa chính sách Rate Limit.', 'success');
+      void queryClient.invalidateQueries({ queryKey: queryKeys.rateLimits });
+    },
+    onError: (err) => notify(getErrorMessage(err), 'danger'),
   });
 
   const endpoints = useMemo<EndpointRow[]>(() => {
@@ -653,19 +715,185 @@ export default function ApiManagementPage() {
       )}
 
       {activeTab === 'rate-limits' && (
-        <NotAvailablePanel
-          title="Dynamic Per-Client Rate Limiting Policies"
-          endpoint="GET/PUT /api/v1/platform/rate-limits"
-          description="NEXUS C 1.0 áp dụng giới hạn lưu lượng qua ASP.NET Core RateLimiter tĩnh (RateLimiting:PermitLimit & AuthPermitLimit) và metadata RateLimitPerMinute trên từng ServiceClient. Giao diện chỉnh sửa phân tán theo thời gian thực được hoãn sau mốc 1.0."
-        />
+        <div className="grid-2">
+          <div className="panel">
+            <div className="panel-header">
+              <h2 className="panel-title">Distributed Rate Limit Policies ({rateLimitsQuery.data?.length ?? 0})</h2>
+            </div>
+            {rateLimitsQuery.isLoading ? (
+              <LoadingState />
+            ) : rateLimitsQuery.error ? (
+              <div className="panel-body"><ErrorState error={rateLimitsQuery.error} onRetry={() => void rateLimitsQuery.refetch()} /></div>
+            ) : !rateLimitsQuery.data?.length ? (
+              <EmptyState title="Chưa có chính sách Rate Limit" description="Tạo chính sách giới hạn lưu lượng phân tán mới ở biểu mẫu bên cạnh." />
+            ) : (
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Tên & Route</th>
+                    <th>Scope</th>
+                    <th>Limit</th>
+                    <th>Status</th>
+                    <th>Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rateLimitsQuery.data.map((p) => (
+                    <tr key={p.id}>
+                      <td>
+                        <div className="mono" style={{ fontWeight: 600 }}>{p.name}</div>
+                        <div className="mono form-hint">{p.routePattern}</div>
+                      </td>
+                      <td><Badge variant="info">{p.scopeType}</Badge></td>
+                      <td className="mono">{p.permitLimit} / {p.windowSeconds}s</td>
+                      <td><Badge variant={p.isEnabled ? 'success' : 'neutral'}>{p.isEnabled ? 'Enabled' : 'Disabled'}</Badge></td>
+                      <td>
+                        {canManageRateLimits && (
+                          <button type="button" className="btn btn-sm btn-danger" onClick={() => deleteRateLimitMutation.mutate(p.id)}>
+                            <Trash2 size={12} /> Xóa
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="panel">
+            <div className="panel-header">
+              <h2 className="panel-title">Tạo chính sách Rate Limit phân tán</h2>
+            </div>
+            <div className="panel-body">
+              {!canManageRateLimits ? (
+                <div className="alert alert-info">Cần quyền <span className="mono">platform.rate-limits.manage</span> để chỉnh sửa chính sách Rate Limit.</div>
+              ) : (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    createRateLimitMutation.mutate();
+                  }}
+                >
+                  <div className="form-field">
+                    <label className="form-label" htmlFor="rl-name">Tên chính sách</label>
+                    <input id="rl-name" className="input mono" placeholder="custom-export-limit" value={rlName} onChange={(e) => setRlName(e.target.value)} required />
+                  </div>
+                  <div className="form-field">
+                    <label className="form-label" htmlFor="rl-route">Route Pattern</label>
+                    <input id="rl-route" className="input mono" value={rlRoute} onChange={(e) => setRlRoute(e.target.value)} required />
+                  </div>
+                  <div className="form-field">
+                    <label className="form-label" htmlFor="rl-scope">Scope Type</label>
+                    <select id="rl-scope" className="select" value={rlScope} onChange={(e) => setRlScope(e.target.value)}>
+                      <option value="AnonymousIp">AnonymousIp</option>
+                      <option value="HumanSession">HumanSession</option>
+                      <option value="ServiceClient">ServiceClient</option>
+                      <option value="ApiKey">ApiKey</option>
+                      <option value="Expensive">Expensive</option>
+                    </select>
+                  </div>
+                  <div className="grid-2">
+                    <div className="form-field">
+                      <label className="form-label" htmlFor="rl-permit">Permit Limit</label>
+                      <input id="rl-permit" type="number" min={1} className="input" value={rlPermit} onChange={(e) => setRlPermit(e.target.value)} required />
+                    </div>
+                    <div className="form-field">
+                      <label className="form-label" htmlFor="rl-win">Window (giây)</label>
+                      <input id="rl-win" type="number" min={1} className="input" value={rlWindow} onChange={(e) => setRlWindow(e.target.value)} required />
+                    </div>
+                  </div>
+                  <button type="submit" className="btn btn-primary" disabled={createRateLimitMutation.isPending}>
+                    <Plus size={14} /> {createRateLimitMutation.isPending ? 'Đang tạo...' : 'Tạo chính sách'}
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {activeTab === 'logs' && (
-        <NotAvailablePanel
-          title="API Request Telemetry Logs"
-          endpoint="GET /api/v1/platform/api-logs"
-          description="NEXUS C 1.0 xuất log HTTP có cấu trúc (Serilog + CorrelationId + OpenTelemetry OTLP) sang hệ thống thu thập log tập trung để tránh phình database giao dịch. Không mô phỏng nhật ký giả trên UI."
-        />
+        <div className="panel">
+          <div className="table-toolbar" style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              type="search"
+              className="input"
+              style={{ maxWidth: 260 }}
+              placeholder="Lọc theo route (/api/v1/...)..."
+              aria-label="Lọc theo route"
+              value={logRouteFilter}
+              onChange={(e) => {
+                setLogRouteFilter(e.target.value);
+                setLogPage(1);
+              }}
+            />
+            <select
+              className="select"
+              style={{ maxWidth: 180 }}
+              aria-label="Lọc quyết định Rate Limit"
+              value={logDecisionFilter}
+              onChange={(e) => {
+                setLogDecisionFilter(e.target.value);
+                setLogPage(1);
+              }}
+            >
+              <option value="">Tất cả Rate Limit</option>
+              <option value="Allowed">Allowed</option>
+              <option value="Throttled">Throttled (429)</option>
+            </select>
+            <button type="button" className="btn btn-sm" onClick={() => void apiLogsQuery.refetch()}>
+              <RefreshCw size={13} /> Làm mới
+            </button>
+            <span className="form-hint" style={{ marginLeft: 'auto' }}>
+              Tổng: {apiLogsQuery.data?.totalCount ?? 0} bản ghi (tuyệt đối không lưu headers nhạy cảm/body)
+            </span>
+          </div>
+          {apiLogsQuery.isLoading ? (
+            <LoadingState />
+          ) : apiLogsQuery.error ? (
+            <div className="panel-body"><ErrorState error={apiLogsQuery.error} onRetry={() => void apiLogsQuery.refetch()} /></div>
+          ) : !apiLogsQuery.data?.items.length ? (
+            <EmptyState title="Chưa có nhật ký API khớp bộ lọc" description="Các yêu cầu HTTP tới /api/v1/* sẽ được ghi nhận tại đây." />
+          ) : (
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Thời gian</th>
+                  <th>Method & Route</th>
+                  <th>Status</th>
+                  <th>Latency</th>
+                  <th>Actor</th>
+                  <th>Rate Limit</th>
+                  <th>Correlation ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                {apiLogsQuery.data.items.map((l) => (
+                  <tr key={l.id}>
+                    <td>{formatDateTime(l.timestamp)}</td>
+                    <td className="mono" style={{ fontSize: 12 }}>
+                      <strong>{l.method}</strong> {l.normalizedRoute}
+                    </td>
+                    <td>
+                      <Badge variant={l.statusCode >= 500 ? 'danger' : l.statusCode >= 400 ? 'warning' : 'success'}>
+                        {l.statusCode}
+                      </Badge>
+                    </td>
+                    <td className="mono">{l.durationMs.toFixed(1)} ms</td>
+                    <td><Badge variant="neutral">{l.actorType}</Badge></td>
+                    <td>
+                      <Badge variant={l.rateLimitDecision === 'Throttled' ? 'danger' : 'success'}>
+                        {l.rateLimitDecision}
+                      </Badge>
+                    </td>
+                    <td className="mono" style={{ fontSize: 11.5 }}>{l.correlationId.slice(0, 12)}…</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       )}
 
       {activeTab === 'webhooks' && (

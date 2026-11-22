@@ -1,17 +1,19 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { RefreshCw, RotateCcw } from 'lucide-react';
-import type { DeadLetterMessageDto } from '../../types/api';
+import { Radio, RefreshCw, RotateCcw } from 'lucide-react';
+import type { DeadLetterMessageDto, PlatformRealtimeEventDto } from '../../types/api';
 import { PageHeader } from '../../components/layout/PageLayout';
 import { Badge, EmptyState, ErrorState, LoadingState, useToast } from '../../components/feedback/Feedback';
 import { ConfirmDialog } from '../../components/dialogs/Dialog';
+import { getApiBaseUrl } from '../../services/api/client';
 import { operationsApi, systemApi } from '../../services/api/modules/platform.api';
 import { queryKeys } from '../../services/api/query-keys';
 import { useAuth } from '../../services/auth/AuthContext';
+import { tokenStore } from '../../services/auth/tokenStore';
 import { getErrorMessage } from '../../services/api/errors';
 import { formatDateTime } from '../../utils/format';
 
-type OpsTab = 'jobs' | 'outbox' | 'inbox' | 'dead-letters';
+type OpsTab = 'jobs' | 'outbox' | 'inbox' | 'dead-letters' | 'realtime';
 
 export default function OperationsPage() {
   const auth = useAuth();
@@ -23,8 +25,79 @@ export default function OperationsPage() {
   const [page, setPage] = useState(1);
   const [retryTarget, setRetryTarget] = useState<DeadLetterMessageDto | null>(null);
   const [retryNote, setRetryNote] = useState('');
+  const [sseState, setSseState] = useState<'connecting' | 'live' | 'stale'>('connecting');
+  const [liveEvents, setLiveEvents] = useState<PlatformRealtimeEventDto[]>([]);
 
   const canManageOps = auth.hasPermission('platform.operations.manage');
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+
+    const connectSse = async () => {
+      await Promise.resolve();
+      const token = tokenStore.getAccessToken();
+      if (!token) {
+        if (active) setSseState('stale');
+        return;
+      }
+
+      try {
+        if (active) setSseState('connecting');
+        const res = await fetch(`${getApiBaseUrl()}/api/v1/platform/realtime/stream`, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'text/event-stream',
+          },
+          signal: controller.signal,
+        });
+
+        if (!res.ok || !res.body || typeof res.body.getReader !== 'function') {
+          if (active) setSseState('stale');
+          return;
+        }
+
+        if (active) setSseState('live');
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (active) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop() ?? '';
+
+          for (const frame of frames) {
+            const lines = frame.split('\n');
+            const eventLine = lines.find((l) => l.startsWith('event: '));
+            const dataLine = lines.find((l) => l.startsWith('data: '));
+            if (!dataLine) continue;
+            const eventName = eventLine ? eventLine.slice(7).trim() : 'message';
+            if (eventName === 'connected') continue;
+            try {
+              const parsed = JSON.parse(dataLine.slice(6)) as PlatformRealtimeEventDto;
+              if (parsed && parsed.eventId && active) {
+                setLiveEvents((prev) => [parsed, ...prev].slice(0, 50));
+              }
+            } catch {
+              // ignore non-JSON frames
+            }
+          }
+        }
+      } catch {
+        if (active) setSseState('stale');
+      }
+    };
+
+    void connectSse();
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [auth.tenantId]);
 
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
@@ -85,9 +158,14 @@ export default function OperationsPage() {
         subtitle="Giám sát sức khỏe hệ thống, Outbox, Inbox idempotency, Dead Letter Queue và tiến trình nền trực tiếp từ NEXUS C Backend."
         breadcrumbs={[{ label: 'Overview', to: '/overview' }, { label: 'Operations' }]}
         actions={
-          <button type="button" className="btn" onClick={refreshAll}>
-            <RefreshCw size={14} /> Làm mới
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Badge variant={sseState === 'live' ? 'success' : sseState === 'connecting' ? 'info' : 'warning'}>
+              <Radio size={12} /> {sseState === 'live' ? 'SSE Live' : sseState === 'connecting' ? 'SSE Connecting' : 'SSE Polling Fallback'}
+            </Badge>
+            <button type="button" className="btn" onClick={refreshAll}>
+              <RefreshCw size={14} /> Làm mới
+            </button>
+          </div>
         }
       />
 
@@ -142,6 +220,7 @@ export default function OperationsPage() {
             ['outbox', 'Outbox Queue'],
             ['inbox', 'Inbox Processed'],
             ['dead-letters', 'Dead Letters (DLQ)'],
+            ['realtime', `Live SSE Feed (${liveEvents.length})`],
           ] as Array<[OpsTab, string]>
         ).map(([id, label]) => (
           <button
@@ -349,6 +428,42 @@ export default function OperationsPage() {
                         <span className="form-hint">—</span>
                       )}
                     </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {tab === 'realtime' && (
+        <div className="panel">
+          <div className="panel-header">
+            <h2 className="panel-title">Luồng Sự kiện Thời gian thực (Authenticated SSE Stream)</h2>
+            <Badge variant={sseState === 'live' ? 'success' : 'neutral'}>{sseState.toUpperCase()}</Badge>
+          </div>
+          {!liveEvents.length ? (
+            <EmptyState
+              title="Đang lắng nghe sự kiện thời gian thực"
+              description="Các sự kiện vận hành được phép theo Tenant & RBAC (Email, Webhook, FX Refresh, Outbox) sẽ xuất hiện tức thì tại đây."
+            />
+          ) : (
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Thời gian</th>
+                  <th>Loại sự kiện</th>
+                  <th>Ứng dụng</th>
+                  <th>Tóm tắt</th>
+                </tr>
+              </thead>
+              <tbody>
+                {liveEvents.map((ev) => (
+                  <tr key={ev.eventId}>
+                    <td>{formatDateTime(ev.occurredAt)}</td>
+                    <td className="mono">{ev.eventType}</td>
+                    <td><Badge variant="info">{ev.applicationCode ?? 'NEXUS_C'}</Badge></td>
+                    <td>{ev.summary}</td>
                   </tr>
                 ))}
               </tbody>

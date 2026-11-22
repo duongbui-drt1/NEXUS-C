@@ -1,9 +1,37 @@
-import type { CreateUserRequest, PagedResult, PermissionDto, RoleDto, UserDto, UserRoleDto } from '../../../types/api';
+import type {
+  ClerkSyncStatusDto,
+  CreateUserRequest,
+  PagedResult,
+  PermissionDto,
+  RoleDto,
+  UpdateUserProfileRequest,
+  UserDetailDto,
+  UserDto,
+  UserRoleDto,
+} from '../../../types/api';
 import { apiRequest } from '../client';
 
 export const usersApi = {
   list: (query: { page?: number; pageSize?: number; search?: string }, signal?: AbortSignal) =>
     apiRequest<PagedResult<UserDto>>('/api/v1/platform/users', { query, signal }),
+
+  getDetail: (userId: string, signal?: AbortSignal) =>
+    apiRequest<UserDetailDto>(`/api/v1/platform/users/${encodeURIComponent(userId)}`, { signal }),
+
+  updateProfile: (userId: string, body: UpdateUserProfileRequest) =>
+    apiRequest<UserDetailDto>(`/api/v1/platform/users/${encodeURIComponent(userId)}/profile`, {
+      method: 'PUT',
+      body,
+    }),
+
+  getClerkSyncStatus: (signal?: AbortSignal) =>
+    apiRequest<ClerkSyncStatusDto>('/api/v1/platform/users/clerk/sync-status', { signal }),
+
+  linkClerkSubject: (userId: string, clerkSubject: string) =>
+    apiRequest<void>('/api/v1/platform/users/clerk/link', {
+      method: 'POST',
+      body: { userId, clerkSubject },
+    }),
 
   create: (body: CreateUserRequest) =>
     apiRequest<UserDto>('/api/v1/platform/users', { method: 'POST', body }),

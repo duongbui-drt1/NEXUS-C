@@ -230,6 +230,18 @@ export interface PlanDto {
   currency: string;
   isActive: boolean;
   features: PlanFeatureInput[];
+  version?: number;
+  archivedAt?: string | null;
+  archiveReason?: string | null;
+}
+
+export interface PlanDeletionResultDto {
+  planId: string;
+  planCode: string;
+  outcome: 'HardDeleted' | 'Archived' | string;
+  referencedSubscriptionCount: number;
+  archivedAt: string | null;
+  message: string;
 }
 
 export interface EntitlementDto {
@@ -275,6 +287,9 @@ export interface ProviderDto {
   isActive: boolean;
   defaultMaxRetries: number;
   defaultTimeoutSeconds: number;
+  version?: string;
+  allowedHosts?: string | null;
+  requiresSecretRef?: boolean;
 }
 
 export interface ConnectionDto {
@@ -287,6 +302,19 @@ export interface ConnectionDto {
   maxRetries: number;
   timeoutSeconds: number;
   lastSyncedAt: string | null;
+  applicationCode?: string | null;
+  healthStatus?: string;
+  lastHealthCheckAt?: string | null;
+  disabledAt?: string | null;
+  nonSecretConfigJson?: string | null;
+}
+
+export interface ConnectionTestResultDto {
+  connectionId: string;
+  healthStatus: string;
+  passed: boolean;
+  summary: string;
+  checkedAt: string;
 }
 
 export interface SyncLogDto {
@@ -515,4 +543,206 @@ export interface OpenApiDocument {
   components?: {
     schemas?: Record<string, unknown>;
   };
+}
+
+// === War-Room Final Foundation Types ===
+
+export interface UserDetailDto {
+  id: string;
+  email: string;
+  fullName: string;
+  firstName: string | null;
+  lastName: string | null;
+  phoneNumber: string | null;
+  jobTitle: string | null;
+  countryCode: string | null;
+  region: string | null;
+  timeZone: string | null;
+  locale: string | null;
+  avatarUrl: string | null;
+  adminNotes: string | null;
+  isActive: boolean;
+  isPlatformUser: boolean;
+  emailConfirmed: boolean;
+  isLockedOut: boolean;
+  createdAt: string;
+  lastSignInAt: string | null;
+  clerkSubject: string | null;
+  clerkSyncStatus: string | null;
+  tenantMemberships: string[];
+  activeSessionCount: number;
+}
+
+export interface UpdateUserProfileRequest {
+  firstName?: string | null;
+  lastName?: string | null;
+  fullName?: string | null;
+  phoneNumber?: string | null;
+  jobTitle?: string | null;
+  countryCode?: string | null;
+  region?: string | null;
+  timeZone?: string | null;
+  locale?: string | null;
+  avatarUrl?: string | null;
+  adminNotes?: string | null;
+}
+
+export interface ClerkSyncStatusDto {
+  appId: string;
+  isEnabled: boolean;
+  hasSecretKey: boolean;
+  hasWebhookSecret: boolean;
+  linkedIdentitiesCount: number;
+  failedSyncCount: number;
+  lastWebhookProcessedAt: string | null;
+}
+
+export interface RateLimitPolicyDto {
+  id: string;
+  name: string;
+  routePattern: string;
+  scopeType: 'AnonymousIp' | 'HumanSession' | 'ServiceClient' | 'ApiKey' | 'Expensive' | string;
+  permitLimit: number;
+  windowSeconds: number;
+  burstLimit: number;
+  isEnabled: boolean;
+  priority: number;
+  description: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+export interface ApiRequestLogDto {
+  id: string;
+  timestamp: string;
+  method: string;
+  normalizedRoute: string;
+  statusCode: number;
+  durationMs: number;
+  correlationId: string;
+  applicationCode: string | null;
+  serviceClientId: string | null;
+  tenantId: string | null;
+  userId: string | null;
+  actorType: string;
+  rateLimitDecision: string;
+  rateLimitPolicy: string | null;
+  errorCode: string | null;
+}
+
+export interface ApiRequestLogPage {
+  items: ApiRequestLogDto[];
+  totalCount: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface EmailProviderStatusDto {
+  providerName: string;
+  isApiKeyConfigured: boolean;
+  isWebhookSecretConfigured: boolean;
+  defaultFromAddress: string;
+  defaultFromName: string;
+  totalDeliveries: number;
+  sentOrDeliveredCount: number;
+  failedOrBouncedCount: number;
+  activeSuppressionCount: number;
+}
+
+export interface EmailDeliveryDto {
+  id: string;
+  tenantId: string | null;
+  provider: string;
+  providerMessageId: string | null;
+  templateKey: string | null;
+  templateVersion: number;
+  recipientMasked: string;
+  subject: string;
+  status: string;
+  attemptCount: number;
+  isTransientError: boolean;
+  lastError: string | null;
+  correlationId: string | null;
+  createdAt: string;
+  sentAt: string | null;
+  deliveredAt: string | null;
+}
+
+export interface EmailSuppressionDto {
+  id: string;
+  recipientMasked: string;
+  reason: string;
+  provider: string;
+  isActive: boolean;
+  suppressedAt: string;
+}
+
+export interface AiCapabilityPolicyDto {
+  id: string;
+  tenantId: string;
+  capabilityCode: string;
+  isEnabled: boolean;
+  killSwitchActive: boolean;
+  requireHumanApproval: boolean;
+  monthlyTokenBudget: number;
+  allowedTools: string | null;
+  promptTemplateVersion: string;
+  dataClassification: string;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+export interface ReferenceDataItemDto {
+  id: string;
+  category: string;
+  code: string;
+  label: string;
+  isActive: boolean;
+  sortOrder: number;
+  localizedLabelsJson: string | null;
+  metadataJson: string | null;
+}
+
+export interface CurrencyDto {
+  id: string;
+  code: string;
+  name: string;
+  symbol: string;
+  minorUnitPrecision: number;
+  isActive: boolean;
+}
+
+export interface FxRateDto {
+  id: string;
+  baseCurrency: string;
+  quoteCurrency: string;
+  rate: number;
+  provider: string;
+  observedAt: string;
+  fetchedAt: string;
+  staleAfter: string;
+  isStale: boolean;
+  sourceReference: string | null;
+  disclaimer: string;
+}
+
+export interface FxRefreshResultDto {
+  baseCurrency: string;
+  provider: string;
+  ratesUpdated: number;
+  observedAt: string;
+  fetchedAt: string;
+  staleAfter: string;
+  disclaimer: string;
+}
+
+export interface PlatformRealtimeEventDto {
+  eventId: string;
+  eventType: string;
+  occurredAt: string;
+  tenantId: string | null;
+  requiredPermission: string;
+  applicationCode: string | null;
+  summary: string;
+  metadata?: unknown;
 }
