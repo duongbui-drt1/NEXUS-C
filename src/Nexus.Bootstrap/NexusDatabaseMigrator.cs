@@ -5,6 +5,7 @@ using Nexus.BuildingBlocks.Messaging;
 using Nexus.Modules.AccessControl.Application;
 using Nexus.Modules.AccessControl.Infrastructure;
 using Nexus.Modules.Audit.Infrastructure;
+using Nexus.Modules.Configuration.Application;
 using Nexus.Modules.Configuration.Infrastructure;
 using Nexus.Modules.FileStorage.Infrastructure;
 using Nexus.Modules.Identity.Application;
@@ -84,7 +85,10 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
             var subscriptionService = scope.ServiceProvider.GetRequiredService<ISubscriptionService>();
             await subscriptionService.SeedApplicationsAsync(ct);
 
-            logger.LogInformation("NEXUS C Foundation migrations, RLS hardening, RBAC & Application Registry seeding completed successfully.");
+            var rateLimitService = scope.ServiceProvider.GetRequiredService<IRateLimitPolicyService>();
+            await rateLimitService.SeedDefaultPoliciesAsync(ct);
+
+            logger.LogInformation("NEXUS C Foundation migrations, RLS hardening, RBAC, Application Registry & Rate Limit seeding completed successfully.");
         }
         finally
         {
@@ -382,6 +386,28 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
             ALTER TABLE notification.email_deliveries FORCE ROW LEVEL SECURITY;
             DROP POLICY IF EXISTS nexus_email_deliveries_isolation ON notification.email_deliveries;
             CREATE POLICY nexus_email_deliveries_isolation ON notification.email_deliveries
+            USING (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR (
+                    NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                    AND ""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
+            )
+            WITH CHECK (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR (
+                    NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                    AND ""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
+            );
+
+            -- 7. messaging.api_request_logs: Platform scope reads all; Tenant scope reads ONLY own tenant API telemetry!
+            ALTER TABLE messaging.api_request_logs ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE messaging.api_request_logs FORCE ROW LEVEL SECURITY;
+            DROP POLICY IF EXISTS nexus_api_request_logs_isolation ON messaging.api_request_logs;
+            CREATE POLICY nexus_api_request_logs_isolation ON messaging.api_request_logs
             USING (
                 current_setting('app.bypass_rls', true) = 'on'
                 OR current_setting('app.is_platform_scope', true) = 'on'

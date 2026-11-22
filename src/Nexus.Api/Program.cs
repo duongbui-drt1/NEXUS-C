@@ -35,6 +35,8 @@ app.UseRateLimiter();
 
 app.UseAuthentication();
 app.UseMiddleware<TenantContextMiddleware>();
+app.UseMiddleware<ApiRequestLoggingMiddleware>();
+app.UseMiddleware<DistributedRateLimitingMiddleware>();
 app.UseAuthorization();
 app.UseMiddleware<IdempotencyMiddleware>();
 

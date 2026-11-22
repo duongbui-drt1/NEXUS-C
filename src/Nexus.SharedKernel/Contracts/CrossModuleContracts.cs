@@ -137,3 +137,40 @@ public interface IExternalIdentityProvider
     string Protocol { get; } // e.g., "OIDC", "SAML2"
     Task<ExternalIdentityResult?> ValidateAssertionAsync(string assertionOrIdToken, CancellationToken ct = default);
 }
+
+/// <summary>
+/// Read-only snapshot of an active distributed rate-limit policy used by API edge middleware.
+/// </summary>
+public sealed record RateLimitPolicySnapshot(
+    Guid Id,
+    string Name,
+    string RoutePattern,
+    string ScopeType,
+    int PermitLimit,
+    int WindowSeconds,
+    int BurstLimit,
+    int Priority);
+
+public interface IRateLimitPolicyProvider
+{
+    Task<IReadOnlyList<RateLimitPolicySnapshot>> GetActivePoliciesAsync(CancellationToken ct = default);
+    void InvalidateCache();
+}
+
+/// <summary>
+/// Platform real-time operational event emitted over SSE (subject to tenant & permission filtering).
+/// </summary>
+public sealed record PlatformRealtimeEvent(
+    string EventId,
+    string EventType,
+    DateTimeOffset OccurredAt,
+    Guid? TenantId,
+    string RequiredPermission,
+    string? ApplicationCode,
+    string Summary,
+    object? Metadata = null);
+
+public interface IPlatformRealtimePublisher
+{
+    ValueTask PublishAsync(PlatformRealtimeEvent evt, CancellationToken ct = default);
+}

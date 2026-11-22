@@ -18,6 +18,7 @@ public sealed class ConfigurationDbContext(
     public DbSet<TenantSetting> TenantSettings => Set<TenantSetting>();
     public DbSet<FeatureFlag> FeatureFlags => Set<FeatureFlag>();
     public DbSet<SettingHistory> SettingHistories => Set<SettingHistory>();
+    public DbSet<RateLimitPolicyRecord> RateLimitPolicies => Set<RateLimitPolicyRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -57,6 +58,23 @@ public sealed class ConfigurationDbContext(
             e.Property(x => x.Scope).HasMaxLength(32).IsRequired();
             e.Property(x => x.Key).HasMaxLength(120).IsRequired();
             e.HasIndex(x => new { x.TenantId, x.Key, x.Version });
+        });
+
+        modelBuilder.Entity<RateLimitPolicyRecord>(e =>
+        {
+            e.ToTable("rate_limit_policies", SchemaName);
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasMaxLength(100).IsRequired();
+            e.Property(x => x.RoutePattern).HasMaxLength(200).IsRequired();
+            e.Property(x => x.ScopeType)
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .HasDefaultValue(RateLimitScopeType.HumanSession)
+                .HasSentinel(RateLimitScopeType.HumanSession)
+                .IsRequired();
+            e.Property(x => x.Description).HasMaxLength(400);
+            e.HasIndex(x => x.Name).IsUnique();
+            e.HasIndex(x => new { x.IsEnabled, x.Priority });
         });
 
         base.OnModelCreating(modelBuilder);

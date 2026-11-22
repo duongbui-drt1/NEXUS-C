@@ -145,3 +145,119 @@ public sealed class SettingHistory : Entity
             ChangedAt = utcNow
         };
 }
+
+public enum RateLimitScopeType
+{
+    AnonymousIp = 1,
+    HumanSession = 2,
+    ServiceClient = 3,
+    ApiKey = 4,
+    Expensive = 5
+}
+
+public sealed class RateLimitPolicyRecord : AuditableEntity
+{
+    private RateLimitPolicyRecord() { }
+
+    public string Name { get; private set; } = string.Empty;
+    public string RoutePattern { get; private set; } = "/api/v1/*";
+    public RateLimitScopeType ScopeType { get; private set; } = RateLimitScopeType.HumanSession;
+    public int PermitLimit { get; private set; } = 120;
+    public int WindowSeconds { get; private set; } = 60;
+    public int BurstLimit { get; private set; }
+    public bool IsEnabled { get; private set; } = true;
+    public int Priority { get; private set; } = 100;
+    public string? Description { get; private set; }
+
+    public static Result<RateLimitPolicyRecord> Create(
+        string name,
+        string routePattern,
+        RateLimitScopeType scopeType,
+        int permitLimit,
+        int windowSeconds,
+        int burstLimit = 0,
+        bool isEnabled = true,
+        int priority = 100,
+        string? description = null)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.Trim().Length > 100)
+        {
+            return Error.Validation("RATE_LIMIT_INVALID_NAME", "Policy name is required (max 100 chars).");
+        }
+
+        if (string.IsNullOrWhiteSpace(routePattern) || !routePattern.Trim().StartsWith('/') || routePattern.Trim().Length > 200)
+        {
+            return Error.Validation("RATE_LIMIT_INVALID_ROUTE", "Route pattern must start with '/' (max 200 chars).");
+        }
+
+        if (permitLimit < 1 || permitLimit > 1_000_000)
+        {
+            return Error.Validation("RATE_LIMIT_INVALID_PERMIT", "PermitLimit must be between 1 and 1,000,000.");
+        }
+
+        if (windowSeconds < 1 || windowSeconds > 86_400)
+        {
+            return Error.Validation("RATE_LIMIT_INVALID_WINDOW", "WindowSeconds must be between 1 and 86,400.");
+        }
+
+        if (burstLimit < 0 || burstLimit > permitLimit)
+        {
+            return Error.Validation("RATE_LIMIT_INVALID_BURST", "BurstLimit must be between 0 and PermitLimit.");
+        }
+
+        return new RateLimitPolicyRecord
+        {
+            Id = Guid.CreateVersion7(),
+            Name = name.Trim().ToLowerInvariant(),
+            RoutePattern = routePattern.Trim(),
+            ScopeType = scopeType,
+            PermitLimit = permitLimit,
+            WindowSeconds = windowSeconds,
+            BurstLimit = burstLimit,
+            IsEnabled = isEnabled,
+            Priority = priority,
+            Description = description?.Trim()
+        };
+    }
+
+    public Result Update(
+        string routePattern,
+        RateLimitScopeType scopeType,
+        int permitLimit,
+        int windowSeconds,
+        int burstLimit,
+        bool isEnabled,
+        int priority,
+        string? description)
+    {
+        if (string.IsNullOrWhiteSpace(routePattern) || !routePattern.Trim().StartsWith('/') || routePattern.Trim().Length > 200)
+        {
+            return Result.Failure(Error.Validation("RATE_LIMIT_INVALID_ROUTE", "Route pattern must start with '/' (max 200 chars)."));
+        }
+
+        if (permitLimit < 1 || permitLimit > 1_000_000)
+        {
+            return Result.Failure(Error.Validation("RATE_LIMIT_INVALID_PERMIT", "PermitLimit must be between 1 and 1,000,000."));
+        }
+
+        if (windowSeconds < 1 || windowSeconds > 86_400)
+        {
+            return Result.Failure(Error.Validation("RATE_LIMIT_INVALID_WINDOW", "WindowSeconds must be between 1 and 86,400."));
+        }
+
+        if (burstLimit < 0 || burstLimit > permitLimit)
+        {
+            return Result.Failure(Error.Validation("RATE_LIMIT_INVALID_BURST", "BurstLimit must be between 0 and PermitLimit."));
+        }
+
+        RoutePattern = routePattern.Trim();
+        ScopeType = scopeType;
+        PermitLimit = permitLimit;
+        WindowSeconds = windowSeconds;
+        BurstLimit = burstLimit;
+        IsEnabled = isEnabled;
+        Priority = priority;
+        Description = description?.Trim();
+        return Result.Success();
+    }
+}

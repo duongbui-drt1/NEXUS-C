@@ -111,6 +111,7 @@ public static class NexusBootstrapExtensions
         services.AddSingleton<IBackgroundJobTracker, BackgroundJobTracker>();
         services.AddScoped<IEventOutboxWriter, DatabaseOutboxWriter>();
         services.AddScoped<IPlatformOperationsService, PlatformOperationsService>();
+        services.AddScoped<IApiRequestLogService, ApiRequestLogService>();
         services.AddScoped<OutboxDispatcher>();
         services.AddScoped<IdempotentEventProcessor>();
         services.AddHostedService<OutboxProcessorBackgroundService>();

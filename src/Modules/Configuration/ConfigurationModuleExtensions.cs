@@ -14,6 +14,10 @@ public static class ConfigurationModuleExtensions
         services.AddScoped<ConfigurationService>();
         services.AddScoped<IConfigurationService>(sp => sp.GetRequiredService<ConfigurationService>());
         services.AddScoped<IFeatureFlagEvaluator>(sp => sp.GetRequiredService<ConfigurationService>());
+        services.AddSingleton<RateLimitPolicyCache>();
+        services.AddScoped<RateLimitPolicyService>();
+        services.AddScoped<IRateLimitPolicyService>(sp => sp.GetRequiredService<RateLimitPolicyService>());
+        services.AddScoped<IRateLimitPolicyProvider>(sp => sp.GetRequiredService<RateLimitPolicyService>());
         return services;
     }
 }

@@ -227,6 +227,70 @@ public sealed class IdempotencyRecord : Entity
     }
 }
 
+/// <summary>
+/// Bounded operational API request telemetry record.
+/// STRICT SECURITY INVARIANT: Never persists Authorization headers, cookies, API keys, passwords,
+/// raw query strings, or request/response bodies.
+/// </summary>
+public sealed class ApiRequestLog : Entity
+{
+    private ApiRequestLog() { }
+
+    public DateTimeOffset Timestamp { get; private set; }
+    public string Method { get; private set; } = string.Empty;
+    public string NormalizedRoute { get; private set; } = string.Empty;
+    public int StatusCode { get; private set; }
+    public double DurationMs { get; private set; }
+    public string CorrelationId { get; private set; } = string.Empty;
+    public string? ApplicationCode { get; private set; }
+    public string? ServiceClientId { get; private set; }
+    public Guid? TenantId { get; private set; }
+    public Guid? UserId { get; private set; }
+    public string ActorType { get; private set; } = "Anonymous";
+    public string RateLimitDecision { get; private set; } = "Allowed";
+    public string? RateLimitPolicy { get; private set; }
+    public string? ErrorCode { get; private set; }
+
+    public static ApiRequestLog Record(
+        DateTimeOffset timestamp,
+        string method,
+        string normalizedRoute,
+        int statusCode,
+        double durationMs,
+        string correlationId,
+        string? applicationCode,
+        string? serviceClientId,
+        Guid? tenantId,
+        Guid? userId,
+        string actorType,
+        string rateLimitDecision,
+        string? rateLimitPolicy,
+        string? errorCode)
+    {
+        static string? Truncate(string? value, int max)
+            => string.IsNullOrWhiteSpace(value) ? null : (value.Trim().Length > max ? value.Trim()[..max] : value.Trim());
+
+        return new ApiRequestLog
+        {
+            Id = Guid.CreateVersion7(),
+            Timestamp = timestamp,
+            Method = Truncate(method, 16) ?? "GET",
+            NormalizedRoute = Truncate(normalizedRoute, 300) ?? "/",
+            StatusCode = statusCode,
+            DurationMs = Math.Round(Math.Max(0, durationMs), 2),
+            CorrelationId = Truncate(correlationId, 100) ?? string.Empty,
+            ApplicationCode = Truncate(applicationCode, 40),
+            ServiceClientId = Truncate(serviceClientId, 100),
+            TenantId = tenantId,
+            UserId = userId,
+            ActorType = Truncate(actorType, 32) ?? "Anonymous",
+            RateLimitDecision = Truncate(rateLimitDecision, 32) ?? "Allowed",
+            RateLimitPolicy = Truncate(rateLimitPolicy, 100),
+            ErrorCode = Truncate(errorCode, 100)
+        };
+    }
+}
+
 public sealed class MessagingDbContext(
     DbContextOptions<MessagingDbContext> options,
     ITenantContext tenantContext,
@@ -240,6 +304,7 @@ public sealed class MessagingDbContext(
     public DbSet<InboxMessage> InboxMessages => Set<InboxMessage>();
     public DbSet<DeadLetterMessage> DeadLetterMessages => Set<DeadLetterMessage>();
     public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
+    public DbSet<ApiRequestLog> ApiRequestLogs => Set<ApiRequestLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -279,6 +344,25 @@ public sealed class MessagingDbContext(
             builder.Property(x => x.ContentType).HasMaxLength(100).IsRequired();
             builder.HasIndex(x => new { x.Key, x.TenantId, x.Route }).IsUnique();
             builder.HasIndex(x => x.ExpiresAt);
+        });
+
+        modelBuilder.Entity<ApiRequestLog>(builder =>
+        {
+            builder.ToTable("api_request_logs", "messaging");
+            builder.HasKey(x => x.Id);
+            builder.Property(x => x.Method).HasMaxLength(16).IsRequired();
+            builder.Property(x => x.NormalizedRoute).HasMaxLength(300).IsRequired();
+            builder.Property(x => x.CorrelationId).HasMaxLength(100).IsRequired();
+            builder.Property(x => x.ApplicationCode).HasMaxLength(40);
+            builder.Property(x => x.ServiceClientId).HasMaxLength(100);
+            builder.Property(x => x.ActorType).HasMaxLength(32).IsRequired();
+            builder.Property(x => x.RateLimitDecision).HasMaxLength(32).IsRequired();
+            builder.Property(x => x.RateLimitPolicy).HasMaxLength(100);
+            builder.Property(x => x.ErrorCode).HasMaxLength(100);
+            builder.HasIndex(x => x.Timestamp);
+            builder.HasIndex(x => new { x.TenantId, x.Timestamp });
+            builder.HasIndex(x => new { x.StatusCode, x.Timestamp });
+            builder.HasIndex(x => x.CorrelationId);
         });
     }
 }
