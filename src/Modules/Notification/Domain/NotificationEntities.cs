@@ -174,3 +174,139 @@ public sealed class NotificationPreference : TenantScopedEntity
         }
     }
 }
+
+public enum EmailDeliveryStatus
+{
+    Pending = 1,
+    Sent = 2,
+    Delivered = 3,
+    Bounced = 4,
+    Complained = 5,
+    Suppressed = 6,
+    Failed = 7,
+    Retrying = 8
+}
+
+public sealed class EmailDeliveryRecord : AuditableEntity
+{
+    private EmailDeliveryRecord() { }
+
+    public Guid? TenantId { get; private set; }
+    public string? IdempotencyKey { get; private set; }
+    public string Provider { get; private set; } = "Resend";
+    public string? ProviderMessageId { get; private set; }
+    public string? TemplateKey { get; private set; }
+    public int TemplateVersion { get; private set; } = 1;
+    public string RecipientMasked { get; private set; } = string.Empty;
+    public string RecipientHash { get; private set; } = string.Empty;
+    public string Subject { get; private set; } = string.Empty;
+    public EmailDeliveryStatus Status { get; private set; } = EmailDeliveryStatus.Pending;
+    public int AttemptCount { get; private set; }
+    public bool IsTransientError { get; private set; }
+    public string? LastError { get; private set; }
+    public string? CorrelationId { get; private set; }
+    public DateTimeOffset? SentAt { get; private set; }
+    public DateTimeOffset? DeliveredAt { get; private set; }
+
+    public static EmailDeliveryRecord Create(
+        Guid? tenantId,
+        string provider,
+        string recipientMasked,
+        string recipientHash,
+        string subject,
+        string? idempotencyKey = null,
+        string? templateKey = null,
+        int templateVersion = 1,
+        string? correlationId = null)
+        => new()
+        {
+            Id = Guid.CreateVersion7(),
+            TenantId = tenantId,
+            Provider = string.IsNullOrWhiteSpace(provider) ? "Resend" : provider.Trim(),
+            RecipientMasked = recipientMasked,
+            RecipientHash = recipientHash,
+            Subject = subject.Length > 300 ? subject[..300] : subject,
+            IdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey) ? null : idempotencyKey.Trim(),
+            TemplateKey = string.IsNullOrWhiteSpace(templateKey) ? null : templateKey.Trim().ToUpperInvariant(),
+            TemplateVersion = Math.Max(1, templateVersion),
+            CorrelationId = correlationId,
+            Status = EmailDeliveryStatus.Pending
+        };
+
+    public void MarkSent(string? providerMessageId, DateTimeOffset utcNow)
+    {
+        AttemptCount++;
+        ProviderMessageId = providerMessageId;
+        Status = EmailDeliveryStatus.Sent;
+        SentAt = utcNow;
+        LastError = null;
+        IsTransientError = false;
+    }
+
+    public void MarkSuppressed(string reason)
+    {
+        Status = EmailDeliveryStatus.Suppressed;
+        LastError = reason;
+    }
+
+    public void MarkFailed(string error, bool isTransient)
+    {
+        AttemptCount++;
+        IsTransientError = isTransient;
+        LastError = error.Length > 1000 ? error[..1000] : error;
+        Status = EmailDeliveryStatus.Failed;
+    }
+
+    public void ApplyWebhookStatus(EmailDeliveryStatus newStatus, DateTimeOffset utcNow, string? error = null)
+    {
+        Status = newStatus;
+        if (newStatus == EmailDeliveryStatus.Delivered) DeliveredAt = utcNow;
+        if (!string.IsNullOrWhiteSpace(error)) LastError = error.Length > 1000 ? error[..1000] : error;
+    }
+}
+
+public sealed class EmailSuppression : Entity
+{
+    private EmailSuppression() { }
+
+    public string RecipientHash { get; private set; } = string.Empty;
+    public string RecipientMasked { get; private set; } = string.Empty;
+    public string Reason { get; private set; } = "Bounce";
+    public string Provider { get; private set; } = "Resend";
+    public bool IsActive { get; private set; } = true;
+    public DateTimeOffset SuppressedAt { get; private set; }
+
+    public static EmailSuppression Create(string recipientHash, string recipientMasked, string reason, string provider, DateTimeOffset utcNow)
+        => new()
+        {
+            Id = Guid.CreateVersion7(),
+            RecipientHash = recipientHash,
+            RecipientMasked = recipientMasked,
+            Reason = reason,
+            Provider = provider,
+            IsActive = true,
+            SuppressedAt = utcNow
+        };
+
+    public void Deactivate() => IsActive = false;
+}
+
+public sealed class EmailWebhookEvent : Entity
+{
+    private EmailWebhookEvent() { }
+
+    public string SvixId { get; private set; } = string.Empty;
+    public string EventType { get; private set; } = string.Empty;
+    public string? ProviderMessageId { get; private set; }
+    public DateTimeOffset ProcessedAt { get; private set; }
+
+    public static EmailWebhookEvent Create(string svixId, string eventType, string? providerMessageId, DateTimeOffset utcNow)
+        => new()
+        {
+            Id = Guid.CreateVersion7(),
+            SvixId = svixId.Trim(),
+            EventType = eventType.Trim(),
+            ProviderMessageId = providerMessageId,
+            ProcessedAt = utcNow
+        };
+}

@@ -142,8 +142,23 @@ public static class NexusBootstrapExtensions
             services.AddSingleton<IObjectStorage, LocalFileObjectStorage>();
         }
 
-        // Email & AI Gateway Providers
-        services.AddSingleton<IEmailSender, LoggingEmailSender>();
+        // Email (Provider-Neutral + Resend Adapter) & AI Gateway Providers
+        services.Configure<EmailOptions>(configuration.GetSection(EmailOptions.SectionName));
+        services.AddHttpClient("ResendApi", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(15);
+        });
+        var emailProvider = configuration["Email:Provider"] ?? "Resend";
+        var hasResendKey = !string.IsNullOrWhiteSpace(configuration["Email:Resend:ApiKey"]) ||
+                           !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("RESEND_API_KEY"));
+        if (string.Equals(emailProvider, "Resend", StringComparison.OrdinalIgnoreCase) && hasResendKey)
+        {
+            services.AddSingleton<IEmailSender, ResendEmailSender>();
+        }
+        else
+        {
+            services.AddSingleton<IEmailSender, LoggingEmailSender>();
+        }
         services.AddSingleton<IAiProvider, UnconfiguredAiProvider>();
 
         // Authorization policy provider & handler

@@ -375,6 +375,28 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
                 OR (
                     NULLIF(current_setting('app.current_tenant_id', true), '') IS NULL
                 )
+            );
+
+            -- 6. notification.email_deliveries: Platform scope reads/writes all; Tenant scope reads/writes ONLY own tenant deliveries!
+            ALTER TABLE notification.email_deliveries ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE notification.email_deliveries FORCE ROW LEVEL SECURITY;
+            DROP POLICY IF EXISTS nexus_email_deliveries_isolation ON notification.email_deliveries;
+            CREATE POLICY nexus_email_deliveries_isolation ON notification.email_deliveries
+            USING (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR (
+                    NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                    AND ""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
+            )
+            WITH CHECK (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR (
+                    NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                    AND ""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
             );";
 
         await using (var hybridCmd = new NpgsqlCommand(hybridRlsSql, conn))

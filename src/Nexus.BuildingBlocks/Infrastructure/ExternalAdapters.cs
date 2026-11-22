@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
+using System.Text;
 using Amazon.S3;
 using Amazon.S3.Model;
 using Microsoft.Extensions.Logging;
@@ -138,27 +139,204 @@ public sealed class S3ObjectStorage : IObjectStorage, IDisposable
     public void Dispose() => _client.Dispose();
 }
 
-// === Email Provider Abstraction ===
+// === Email Provider Abstraction (Provider-Neutral + Resend Adapter) ===
 
-public sealed record EmailMessage(string To, string Subject, string Body, bool IsHtml = false);
+public sealed class EmailOptions
+{
+    public const string SectionName = "Email";
+
+    public string Provider { get; set; } = "Resend";
+    public string DefaultFromAddress { get; set; } = "no-reply@nexus.local";
+    public string DefaultFromName { get; set; } = "NEXUS Platform";
+    public ResendEmailOptions Resend { get; set; } = new();
+}
+
+public sealed class ResendEmailOptions
+{
+    public string ApiKey { get; set; } = string.Empty;
+    public string BaseUrl { get; set; } = "https://api.resend.com";
+    public string WebhookSecret { get; set; } = string.Empty;
+    public int TimeoutSeconds { get; set; } = 10;
+    public int MaxRetries { get; set; } = 3;
+}
+
+public sealed record EmailMessage(
+    string To,
+    string Subject,
+    string Body,
+    bool IsHtml = false,
+    string? IdempotencyKey = null,
+    string? FromAddress = null,
+    string? FromName = null,
+    string? CorrelationId = null);
+
+public sealed record EmailDispatchResult(
+    bool Succeeded,
+    string Provider,
+    string? ProviderMessageId,
+    bool IsTransientFailure,
+    int? HttpStatusCode,
+    string? ErrorMessage);
 
 public interface IEmailSender
 {
+    string ProviderName => "Logging";
+    bool IsConfigured => true;
     Task SendAsync(EmailMessage message, CancellationToken ct = default);
+    async Task<EmailDispatchResult> SendWithResultAsync(EmailMessage message, CancellationToken ct = default)
+    {
+        await SendAsync(message, ct);
+        return new EmailDispatchResult(true, ProviderName, $"local-{Guid.NewGuid():N}", false, 200, null);
+    }
 }
 
 public sealed class LoggingEmailSender(ILogger<LoggingEmailSender> logger) : IEmailSender
 {
+    public string ProviderName => "Logging";
+    public bool IsConfigured => true;
+
     public Task SendAsync(EmailMessage message, CancellationToken ct = default)
     {
-        logger.LogInformation("Email dispatched via LoggingEmailSender to {Recipient} with subject '{Subject}'",
-            message.To, message.Subject);
+        logger.LogInformation("Email dispatched via LoggingEmailSender to {MaskedRecipient} with subject '{Subject}'",
+            MaskEmail(message.To), message.Subject);
         return Task.CompletedTask;
+    }
+
+    public static string MaskEmail(string? email)
+    {
+        if (string.IsNullOrWhiteSpace(email)) return "***";
+        var at = email.IndexOf('@');
+        if (at <= 1) return $"***{(at >= 0 ? email[at..] : string.Empty)}";
+        return $"{email[0]}***{email[at..]}";
+    }
+}
+
+public sealed class ResendEmailSender(
+    IHttpClientFactory httpClientFactory,
+    IOptions<EmailOptions> options,
+    ILogger<ResendEmailSender> logger) : IEmailSender
+{
+    public string ProviderName => "Resend";
+
+    private string ResolveApiKey()
+        => !string.IsNullOrWhiteSpace(options.Value.Resend.ApiKey)
+            ? options.Value.Resend.ApiKey.Trim()
+            : (Environment.GetEnvironmentVariable("RESEND_API_KEY") ?? string.Empty).Trim();
+
+    public bool IsConfigured => !string.IsNullOrWhiteSpace(ResolveApiKey());
+
+    public async Task SendAsync(EmailMessage message, CancellationToken ct = default)
+    {
+        var result = await SendWithResultAsync(message, ct);
+        if (!result.Succeeded)
+        {
+            throw new InvalidOperationException(result.ErrorMessage ?? "Resend email delivery failed.");
+        }
+    }
+
+    public async Task<EmailDispatchResult> SendWithResultAsync(EmailMessage message, CancellationToken ct = default)
+    {
+        var apiKey = ResolveApiKey();
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return new EmailDispatchResult(false, ProviderName, null, false, null, "Resend API key is not configured.");
+        }
+
+        var cfg = options.Value;
+        var maxRetries = Math.Clamp(cfg.Resend.MaxRetries, 1, 5);
+        var fromAddr = string.IsNullOrWhiteSpace(message.FromAddress) ? cfg.DefaultFromAddress : message.FromAddress.Trim();
+        var fromName = string.IsNullOrWhiteSpace(message.FromName) ? cfg.DefaultFromName : message.FromName.Trim();
+        var fromFormatted = string.IsNullOrWhiteSpace(fromName) ? fromAddr : $"{fromName} <{fromAddr}>";
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["from"] = fromFormatted,
+            ["to"] = new[] { message.To.Trim() },
+            ["subject"] = message.Subject
+        };
+        if (message.IsHtml) payload["html"] = message.Body;
+        else payload["text"] = message.Body;
+
+        var json = System.Text.Json.JsonSerializer.Serialize(payload);
+        var url = $"{cfg.Resend.BaseUrl.TrimEnd('/')}/emails";
+        var client = httpClientFactory.CreateClient("ResendApi");
+
+        for (var attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Post, url)
+                {
+                    Content = new StringContent(json, Encoding.UTF8, "application/json")
+                };
+                req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+                if (!string.IsNullOrWhiteSpace(message.IdempotencyKey))
+                {
+                    req.Headers.TryAddWithoutValidation("Idempotency-Key", message.IdempotencyKey);
+                }
+
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(cfg.Resend.TimeoutSeconds, 2, 60)));
+
+                using var resp = await client.SendAsync(req, timeoutCts.Token);
+                var body = await resp.Content.ReadAsStringAsync(timeoutCts.Token);
+                var statusCode = (int)resp.StatusCode;
+
+                if (resp.IsSuccessStatusCode)
+                {
+                    string? messageId = null;
+                    try
+                    {
+                        using var doc = System.Text.Json.JsonDocument.Parse(body);
+                        if (doc.RootElement.TryGetProperty("id", out var idEl))
+                        {
+                            messageId = idEl.GetString();
+                        }
+                    }
+                    catch { /* non-fatal parse */ }
+
+                    logger.LogInformation("Resend email accepted (ProviderMessageId={MessageId}, Recipient={MaskedRecipient})",
+                        messageId, LoggingEmailSender.MaskEmail(message.To));
+                    return new EmailDispatchResult(true, ProviderName, messageId, false, statusCode, null);
+                }
+
+                var isTransient = statusCode == 429 || statusCode >= 500;
+                var sanitizedErr = $"Resend HTTP {statusCode}: {(body.Length > 300 ? body[..300] : body)}";
+
+                if (!isTransient || attempt == maxRetries)
+                {
+                    return new EmailDispatchResult(false, ProviderName, null, isTransient, statusCode, sanitizedErr);
+                }
+
+                var delayMs = (int)(Math.Pow(2, attempt) * 150) + Random.Shared.Next(25, 125);
+                await Task.Delay(delayMs, ct);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                if (attempt == maxRetries)
+                {
+                    return new EmailDispatchResult(false, ProviderName, null, true, 504, "Resend API request timed out.");
+                }
+                await Task.Delay(attempt * 200, ct);
+            }
+            catch (HttpRequestException ex)
+            {
+                if (attempt == maxRetries)
+                {
+                    return new EmailDispatchResult(false, ProviderName, null, true, null, $"Resend transport error: {ex.Message}");
+                }
+                await Task.Delay(attempt * 200, ct);
+            }
+        }
+
+        return new EmailDispatchResult(false, ProviderName, null, true, null, "Resend delivery exhausted retries.");
     }
 }
 
 public sealed class InMemoryTestEmailSender : IEmailSender
 {
+    public string ProviderName => "InMemoryTest";
+    public bool IsConfigured => true;
     private readonly ConcurrentQueue<EmailMessage> _sent = new();
     public IReadOnlyCollection<EmailMessage> SentMessages => _sent.ToArray();
 

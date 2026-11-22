@@ -11,6 +11,7 @@ public static class NotificationModuleExtensions
     {
         services.AddNexusModuleDbContext<NotificationDbContext>(connectionString, "notification");
         services.AddScoped<INotificationService, NotificationService>();
+        services.AddScoped<ISharedEmailService, SharedEmailService>();
         return services;
     }
 }
