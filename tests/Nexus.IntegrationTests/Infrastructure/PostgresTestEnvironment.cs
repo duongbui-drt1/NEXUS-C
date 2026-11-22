@@ -240,6 +240,9 @@ public sealed class NexusApiFactory(
             ["ObjectStorage:LocalBasePath"] = tempStorageDir,
             ["ObjectStorage:SigningSecret"] = NexusPostgresFixture.TestStorageSigningSecret,
             ["OpenApi:Enabled"] = "true",
+            ["Clerk:Enabled"] = "true",
+            ["Clerk:Issuer"] = "https://clerk.nexus.test",
+            ["Clerk:WebhookSecret"] = "whsec_VGVzdENsZXJrV2ViaG9va1NlY3JldEtleTMyQnl0ZXM=",
             ["RateLimiting:PermitLimit"] = (overrideRateLimit ?? 5000).ToString(),
             ["RateLimiting:AuthPermitLimit"] = (overrideRateLimit ?? 5000).ToString(),
             ["RateLimiting:WindowSeconds"] = "60"

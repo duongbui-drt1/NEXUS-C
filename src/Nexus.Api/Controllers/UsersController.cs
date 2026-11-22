@@ -12,7 +12,7 @@ public sealed record DisableUserRequest(string Reason);
 
 [ApiController]
 [Route("api/v1/platform/users")]
-public sealed class UsersController(IAuthService authService) : ControllerBase
+public sealed class UsersController(IAuthService authService, IClerkSyncService clerkSyncService) : ControllerBase
 {
     private static readonly JsonSerializerOptions ProfileJsonOpts = new() { PropertyNameCaseInsensitive = true };
 
@@ -86,4 +86,19 @@ public sealed class UsersController(IAuthService authService) : ControllerBase
     [RequirePermission(Permissions.UsersManage)]
     public async Task<IActionResult> RevokeUserSession(Guid userId, Guid sessionId, CancellationToken ct)
         => (await authService.RevokeSessionAsync(userId, sessionId, "AdminRevoked", ct)).ToActionResult(HttpContext);
+
+    [HttpGet("clerk/sync-status")]
+    [RequirePermission(Permissions.UsersRead)]
+    public async Task<IActionResult> GetClerkSyncStatus(CancellationToken ct)
+        => (await clerkSyncService.GetSyncStatusAsync(ct)).ToActionResult(HttpContext);
+
+    [HttpPost("clerk/link")]
+    [RequirePermission(Permissions.UsersManage)]
+    public async Task<IActionResult> LinkClerkSubject([FromBody] LinkClerkAccountRequest request, CancellationToken ct)
+        => (await clerkSyncService.LinkUserToClerkSubjectAsync(request, ct)).ToActionResult(HttpContext);
+
+    [HttpPost("clerk/reconcile")]
+    [RequirePermission(Permissions.UsersManage)]
+    public async Task<IActionResult> ReconcileClerk(CancellationToken ct)
+        => (await clerkSyncService.ReconcileFromClerkApiAsync(ct)).ToActionResult(HttpContext);
 }

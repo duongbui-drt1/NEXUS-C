@@ -239,7 +239,68 @@ public sealed class TenantContextMiddleware(RequestDelegate next, ILogger<Tenant
             return;
         }
 
-        // 3. Human user authentication & tenancy verification path
+        // 3. Clerk external identity resolution: map verified Clerk subject -> immutable internal NEXUS UserId
+        // Never trust Clerk profile/role/tenant claims; resolve memberships and permissions exclusively on the server!
+        var authProvider = context.User.FindFirstValue("auth_provider");
+        if (string.Equals(authProvider, "Clerk", StringComparison.OrdinalIgnoreCase))
+        {
+            var clerkSub = context.User.FindFirstValue("sub");
+            if (string.IsNullOrWhiteSpace(clerkSub))
+            {
+                await WriteProblemAsync(context, Error.Unauthorized("CLERK_INVALID_TOKEN", "Clerk token missing subject identifier."));
+                return;
+            }
+
+            var mappedUser = await userDirectory.GetByExternalSubjectAsync("Clerk", clerkSub, context.RequestAborted);
+            if (mappedUser is null || !mappedUser.IsActive || mappedUser.IsLockedOut)
+            {
+                await WriteProblemAsync(context, Error.Forbidden(
+                    "CLERK_USER_NOT_PROVISIONED",
+                    "Authenticated Clerk identity is not linked to an active NEXUS user account."));
+                return;
+            }
+
+            var requestedTidHeader = context.Request.Headers["X-Tenant-Id"].FirstOrDefault()
+                                     ?? context.Request.Headers["Tenant-ID"].FirstOrDefault();
+            Guid? resolvedTenantId = null;
+
+            if (!string.IsNullOrWhiteSpace(requestedTidHeader))
+            {
+                if (!Guid.TryParse(requestedTidHeader, out var parsedTid))
+                {
+                    await WriteProblemAsync(context, Error.Validation("INVALID_TENANT_HEADER", "Invalid X-Tenant-Id header format."));
+                    return;
+                }
+                resolvedTenantId = parsedTid;
+            }
+            else if (!mappedUser.IsPlatformUser)
+            {
+                var accessible = await tenantValidator.GetAccessibleTenantIdsAsync(mappedUser.UserId, context.RequestAborted);
+                if (accessible.Count == 1)
+                {
+                    resolvedTenantId = accessible[0];
+                }
+            }
+
+            var mappedClaims = new List<Claim>
+            {
+                new("sub", mappedUser.UserId.ToString("D")),
+                new(ClaimTypes.NameIdentifier, mappedUser.UserId.ToString("D")),
+                new("email", mappedUser.Email),
+                new("scope", mappedUser.IsPlatformUser && !resolvedTenantId.HasValue ? "platform" : "tenant"),
+                new("auth_provider", "Clerk"),
+                new("clerk_sub", clerkSub)
+            };
+
+            if (resolvedTenantId.HasValue)
+            {
+                mappedClaims.Add(new Claim("tid", resolvedTenantId.Value.ToString("D")));
+            }
+
+            context.User = new ClaimsPrincipal(new ClaimsIdentity(mappedClaims, "ClerkJwt"));
+        }
+
+        // 4. Human user authentication & tenancy verification path
         if (!currentUser.UserId.HasValue)
         {
             await WriteProblemAsync(context, Error.Unauthorized("AUTH_INVALID_TOKEN", "Authenticated principal is missing subject identifier."));

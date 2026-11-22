@@ -958,7 +958,7 @@ public sealed class AuthService(
             user.UpdatedAt,
             user.LastSignInAt,
             clerkIdentity?.ProviderSubject,
-            clerkIdentity is null ? "LocalOnly" : "Linked",
+            clerkIdentity?.SyncStatus ?? "LocalOnly",
             tenantIds,
             activeSessions);
     }
@@ -1160,7 +1160,7 @@ public sealed class UserDirectoryReader(IdentityModuleDbContext db, ISystemClock
 
         var profile = await db.UserProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.UserId == userId, ct);
         var locked = user.LockoutEnd.HasValue && user.LockoutEnd.Value > clock.UtcNow;
-        return new UserSummary(user.Id, user.Email ?? string.Empty, profile?.FullName ?? user.Email ?? string.Empty, user.IsActive, locked);
+        return new UserSummary(user.Id, user.Email ?? string.Empty, profile?.FullName ?? user.Email ?? string.Empty, user.IsActive, locked, user.IsPlatformUser);
     }
 
     public async Task<UserSummary?> GetByEmailAsync(string email, CancellationToken ct = default)
@@ -1171,7 +1171,21 @@ public sealed class UserDirectoryReader(IdentityModuleDbContext db, ISystemClock
 
         var profile = await db.UserProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.UserId == user.Id, ct);
         var locked = user.LockoutEnd.HasValue && user.LockoutEnd.Value > clock.UtcNow;
-        return new UserSummary(user.Id, user.Email ?? string.Empty, profile?.FullName ?? user.Email ?? string.Empty, user.IsActive, locked);
+        return new UserSummary(user.Id, user.Email ?? string.Empty, profile?.FullName ?? user.Email ?? string.Empty, user.IsActive, locked, user.IsPlatformUser);
+    }
+
+    public async Task<UserSummary?> GetByExternalSubjectAsync(string provider, string externalSubject, CancellationToken ct = default)
+    {
+        var prov = provider.Trim();
+        var sub = externalSubject.Trim();
+        var ext = await db.ExternalIdentities.AsNoTracking()
+            .FirstOrDefaultAsync(e => e.Provider == prov && e.ProviderSubject == sub, ct);
+        if (ext is null || ext.IsBanned || string.Equals(ext.SyncStatus, "Deactivated", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return await GetByIdAsync(ext.UserId, ct);
     }
 
     public async Task<bool> IsSessionActiveAsync(Guid userId, Guid sessionId, CancellationToken ct = default)

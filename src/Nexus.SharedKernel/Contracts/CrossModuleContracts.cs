@@ -103,12 +103,14 @@ public interface IFeatureFlagEvaluator
     Task<bool?> EvaluateFlagOverrideAsync(Guid tenantId, string key, CancellationToken ct = default);
 }
 
-public sealed record UserSummary(Guid UserId, string Email, string FullName, bool IsActive, bool IsLockedOut);
+public sealed record UserSummary(Guid UserId, string Email, string FullName, bool IsActive, bool IsLockedOut, bool IsPlatformUser = false);
 
 public interface IUserDirectoryReader
 {
     Task<UserSummary?> GetByIdAsync(Guid userId, CancellationToken ct = default);
     Task<UserSummary?> GetByEmailAsync(string email, CancellationToken ct = default);
+    Task<UserSummary?> GetByExternalSubjectAsync(string provider, string externalSubject, CancellationToken ct = default)
+        => Task.FromResult<UserSummary?>(null);
     Task<bool> IsSessionActiveAsync(Guid userId, Guid sessionId, CancellationToken ct = default);
 }
 

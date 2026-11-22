@@ -175,16 +175,88 @@ public sealed class ExternalIdentity : AuditableEntity
     public string Provider { get; private set; } = string.Empty;
     public string ProviderSubject { get; private set; } = string.Empty;
     public string? ProviderEmail { get; private set; }
+    public bool EmailVerified { get; private set; }
+    public bool IsBanned { get; private set; }
+    public string SyncStatus { get; private set; } = "Synced";
+    public DateTimeOffset? SyncedAt { get; private set; }
+    public DateTimeOffset? LastProviderEventAt { get; private set; }
+    public string? LastError { get; private set; }
 
-    public static ExternalIdentity Create(Guid userId, string provider, string subject, string? email)
+    public static ExternalIdentity Create(
+        Guid userId,
+        string provider,
+        string subject,
+        string? email,
+        bool emailVerified = false,
+        DateTimeOffset? eventTimestamp = null)
         => new()
         {
             Id = Guid.CreateVersion7(),
             UserId = userId,
             Provider = provider.Trim(),
             ProviderSubject = subject.Trim(),
-            ProviderEmail = email?.Trim().ToLowerInvariant()
+            ProviderEmail = email?.Trim().ToLowerInvariant(),
+            EmailVerified = emailVerified,
+            IsBanned = false,
+            SyncStatus = "Synced",
+            SyncedAt = DateTimeOffset.UtcNow,
+            LastProviderEventAt = eventTimestamp
         };
+
+    public bool CanApplyEvent(DateTimeOffset eventTimestamp)
+        => !LastProviderEventAt.HasValue || eventTimestamp >= LastProviderEventAt.Value;
+
+    public void ApplySyncUpdate(string? email, bool emailVerified, bool isBanned, DateTimeOffset eventTimestamp, DateTimeOffset syncedAt)
+    {
+        if (!string.IsNullOrWhiteSpace(email)) ProviderEmail = email.Trim().ToLowerInvariant();
+        EmailVerified = emailVerified;
+        IsBanned = isBanned;
+        SyncStatus = isBanned ? "Banned" : "Synced";
+        SyncedAt = syncedAt;
+        LastProviderEventAt = eventTimestamp;
+        LastError = null;
+    }
+
+    public void MarkDeactivated(DateTimeOffset eventTimestamp, DateTimeOffset syncedAt)
+    {
+        SyncStatus = "Deactivated";
+        SyncedAt = syncedAt;
+        LastProviderEventAt = eventTimestamp;
+        LastError = null;
+    }
+}
+
+public sealed class ClerkWebhookEvent : Entity
+{
+    private ClerkWebhookEvent() { }
+
+    public string SvixId { get; private set; } = string.Empty;
+    public string EventType { get; private set; } = string.Empty;
+    public string? ProviderSubject { get; private set; }
+    public DateTimeOffset EventTimestamp { get; private set; }
+    public string Status { get; private set; } = "Received";
+    public DateTimeOffset ReceivedAt { get; private set; }
+    public DateTimeOffset? ProcessedAt { get; private set; }
+    public string? ErrorMessage { get; private set; }
+
+    public static ClerkWebhookEvent Create(string svixId, string eventType, string? subject, DateTimeOffset eventTimestamp, DateTimeOffset receivedAt)
+        => new()
+        {
+            Id = Guid.CreateVersion7(),
+            SvixId = svixId.Trim(),
+            EventType = eventType.Trim(),
+            ProviderSubject = string.IsNullOrWhiteSpace(subject) ? null : subject.Trim(),
+            EventTimestamp = eventTimestamp,
+            Status = "Received",
+            ReceivedAt = receivedAt
+        };
+
+    public void MarkProcessed(string status, DateTimeOffset utcNow, string? error = null)
+    {
+        Status = status;
+        ProcessedAt = utcNow;
+        ErrorMessage = error?.Length > 1000 ? error[..1000] : error;
+    }
 }
 
 public sealed class LoginAttempt : Entity

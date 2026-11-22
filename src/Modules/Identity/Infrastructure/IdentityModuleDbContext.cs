@@ -16,6 +16,7 @@ public sealed class IdentityModuleDbContext(DbContextOptions<IdentityModuleDbCon
     public DbSet<UserSession> UserSessions => Set<UserSession>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<ExternalIdentity> ExternalIdentities => Set<ExternalIdentity>();
+    public DbSet<ClerkWebhookEvent> ClerkWebhookEvents => Set<ClerkWebhookEvent>();
     public DbSet<LoginAttempt> LoginAttempts => Set<LoginAttempt>();
     public DbSet<ServiceClient> ServiceClients => Set<ServiceClient>();
     public DbSet<ApiKeyRecord> ApiKeys => Set<ApiKeyRecord>();
@@ -89,9 +90,24 @@ public sealed class IdentityModuleDbContext(DbContextOptions<IdentityModuleDbCon
             e.Property(x => x.Provider).HasMaxLength(64).IsRequired();
             e.Property(x => x.ProviderSubject).HasMaxLength(256).IsRequired();
             e.Property(x => x.ProviderEmail).HasMaxLength(256);
+            e.Property(x => x.SyncStatus).HasMaxLength(32).HasDefaultValue("Synced").IsRequired();
+            e.Property(x => x.LastError).HasMaxLength(1000);
             e.Property(x => x.RowVersion).IsRowVersion();
             e.HasIndex(x => new { x.Provider, x.ProviderSubject }).IsUnique();
             e.HasOne<ApplicationUser>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        builder.Entity<ClerkWebhookEvent>(e =>
+        {
+            e.ToTable("clerk_webhook_events", SchemaName);
+            e.HasKey(x => x.Id);
+            e.Property(x => x.SvixId).HasMaxLength(150).IsRequired();
+            e.Property(x => x.EventType).HasMaxLength(100).IsRequired();
+            e.Property(x => x.ProviderSubject).HasMaxLength(256);
+            e.Property(x => x.Status).HasMaxLength(32).IsRequired();
+            e.Property(x => x.ErrorMessage).HasMaxLength(1000);
+            e.HasIndex(x => x.SvixId).IsUnique();
+            e.HasIndex(x => x.ReceivedAt);
         });
 
         builder.Entity<LoginAttempt>(e =>
