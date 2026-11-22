@@ -10,6 +10,7 @@ using Nexus.Modules.Configuration.Infrastructure;
 using Nexus.Modules.FileStorage.Infrastructure;
 using Nexus.Modules.Identity.Application;
 using Nexus.Modules.Identity.Infrastructure;
+using Nexus.Modules.Integration.Application;
 using Nexus.Modules.Integration.Infrastructure;
 using Nexus.Modules.Notification.Infrastructure;
 using Nexus.Modules.Organization.Infrastructure;
@@ -87,6 +88,9 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
 
             var rateLimitService = scope.ServiceProvider.GetRequiredService<IRateLimitPolicyService>();
             await rateLimitService.SeedDefaultPoliciesAsync(ct);
+
+            var integrationService = scope.ServiceProvider.GetRequiredService<IIntegrationService>();
+            await integrationService.SeedCanonicalProvidersAsync(ct);
 
             logger.LogInformation("NEXUS C Foundation migrations, RLS hardening, RBAC, Application Registry & Rate Limit seeding completed successfully.");
         }

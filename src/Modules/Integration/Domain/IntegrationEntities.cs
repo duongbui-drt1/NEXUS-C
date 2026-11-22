@@ -32,12 +32,25 @@ public sealed class ProviderDefinition : AuditableEntity
 
     public string Code { get; private set; } = string.Empty;
     public string Name { get; private set; } = string.Empty;
-    public string Category { get; private set; } = string.Empty; // ERP, Banking, Carrier, EInvoice, AI
+    public string Category { get; private set; } = string.Empty; // ERP, Banking, Carrier, EInvoice, Email, Identity, Storage, ReferenceData, AI
+    public string Version { get; private set; } = "1.0";
+    public string? AllowedHosts { get; private set; }
+    public string? ConfigSchemaJson { get; private set; }
+    public bool RequiresSecretRef { get; private set; } = true;
     public bool IsActive { get; private set; } = true;
     public int DefaultMaxRetries { get; private set; } = 3;
     public int DefaultTimeoutSeconds { get; private set; } = 30;
 
-    public static Result<ProviderDefinition> Create(string code, string name, string category, int maxRetries = 3, int timeoutSeconds = 30)
+    public static Result<ProviderDefinition> Create(
+        string code,
+        string name,
+        string category,
+        int maxRetries = 3,
+        int timeoutSeconds = 30,
+        string? version = null,
+        string? allowedHosts = null,
+        string? configSchemaJson = null,
+        bool requiresSecretRef = true)
     {
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(name))
         {
@@ -50,6 +63,10 @@ public sealed class ProviderDefinition : AuditableEntity
             Code = code.Trim().ToUpperInvariant(),
             Name = name.Trim(),
             Category = string.IsNullOrWhiteSpace(category) ? "General" : category.Trim(),
+            Version = string.IsNullOrWhiteSpace(version) ? "1.0" : version.Trim(),
+            AllowedHosts = string.IsNullOrWhiteSpace(allowedHosts) ? null : allowedHosts.Trim().ToLowerInvariant(),
+            ConfigSchemaJson = string.IsNullOrWhiteSpace(configSchemaJson) ? null : configSchemaJson.Trim(),
+            RequiresSecretRef = requiresSecretRef,
             IsActive = true,
             DefaultMaxRetries = Math.Clamp(maxRetries, 0, 10),
             DefaultTimeoutSeconds = Math.Clamp(timeoutSeconds, 5, 120)
@@ -63,23 +80,33 @@ public sealed class IntegrationConnection : TenantScopedEntity
 
     public Guid ProviderId { get; private set; }
     public string Name { get; private set; } = string.Empty;
+    public string? ApplicationCode { get; private set; }
     public string CredentialReference { get; private set; } = string.Empty; // e.g., vault://nexus/tenant-a/provider-x
+    public string? NonSecretConfigJson { get; private set; }
     public ConnectionStatus Status { get; private set; } = ConnectionStatus.Pending;
+    public string HealthStatus { get; private set; } = "Unknown";
+    public DateTimeOffset? LastHealthCheckAt { get; private set; }
+    public DateTimeOffset? DisabledAt { get; private set; }
     public int MaxRetries { get; private set; } = 3;
     public int TimeoutSeconds { get; private set; } = 30;
     public DateTimeOffset? LastSyncedAt { get; private set; }
 
-    public static Result<IntegrationConnection> Create(Guid tenantId, Guid providerId, string name, string credentialReference, int maxRetries = 3, int timeoutSeconds = 30)
+    public static Result<IntegrationConnection> Create(
+        Guid tenantId,
+        Guid providerId,
+        string name,
+        string credentialReference,
+        int maxRetries = 3,
+        int timeoutSeconds = 30,
+        string? applicationCode = null,
+        string? nonSecretConfigJson = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
             return Error.Validation("INTEGRATION_INVALID_NAME", "Connection name is required.");
         }
 
-        if (string.IsNullOrWhiteSpace(credentialReference) ||
-            (!credentialReference.StartsWith("vault://", StringComparison.OrdinalIgnoreCase) &&
-             !credentialReference.StartsWith("env://", StringComparison.OrdinalIgnoreCase) &&
-             !credentialReference.StartsWith("kms://", StringComparison.OrdinalIgnoreCase)))
+        if (!IsValidSecretReference(credentialReference))
         {
             return Error.Validation(
                 "INTEGRATION_INVALID_CREDENTIAL_REF",
@@ -91,8 +118,11 @@ public sealed class IntegrationConnection : TenantScopedEntity
             Id = Guid.CreateVersion7(),
             ProviderId = providerId,
             Name = name.Trim(),
+            ApplicationCode = string.IsNullOrWhiteSpace(applicationCode) ? null : applicationCode.Trim().ToUpperInvariant(),
             CredentialReference = credentialReference.Trim(),
+            NonSecretConfigJson = string.IsNullOrWhiteSpace(nonSecretConfigJson) ? null : nonSecretConfigJson.Trim(),
             Status = ConnectionStatus.Connected,
+            HealthStatus = "Unknown",
             MaxRetries = Math.Clamp(maxRetries, 0, 10),
             TimeoutSeconds = Math.Clamp(timeoutSeconds, 5, 120)
         };
@@ -100,10 +130,55 @@ public sealed class IntegrationConnection : TenantScopedEntity
         return conn;
     }
 
+    public static bool IsValidSecretReference(string? credentialReference)
+        => !string.IsNullOrWhiteSpace(credentialReference) &&
+           (credentialReference.StartsWith("vault://", StringComparison.OrdinalIgnoreCase) ||
+            credentialReference.StartsWith("env://", StringComparison.OrdinalIgnoreCase) ||
+            credentialReference.StartsWith("kms://", StringComparison.OrdinalIgnoreCase));
+
     public void UpdateStatus(ConnectionStatus status, DateTimeOffset? syncedAt = null)
     {
         Status = status;
         if (syncedAt.HasValue) LastSyncedAt = syncedAt.Value;
+    }
+
+    public void Disable(DateTimeOffset utcNow)
+    {
+        Status = ConnectionStatus.Disconnected;
+        HealthStatus = "Disabled";
+        DisabledAt = utcNow;
+    }
+
+    public void Reconnect()
+    {
+        Status = ConnectionStatus.Connected;
+        HealthStatus = "Unknown";
+        DisabledAt = null;
+    }
+
+    public Result RotateCredentialReference(string newCredentialReference)
+    {
+        if (!IsValidSecretReference(newCredentialReference))
+        {
+            return Result.Failure(Error.Validation(
+                "INTEGRATION_INVALID_CREDENTIAL_REF",
+                "CredentialReference must be an external secret reference URI (vault://, env://, or kms://). Raw credentials are forbidden."));
+        }
+
+        CredentialReference = newCredentialReference.Trim();
+        return Result.Success();
+    }
+
+    public void RecordHealthCheck(string healthStatus, DateTimeOffset utcNow)
+    {
+        HealthStatus = healthStatus;
+        LastHealthCheckAt = utcNow;
+        if (Status != ConnectionStatus.Disconnected)
+        {
+            Status = string.Equals(healthStatus, "Healthy", StringComparison.OrdinalIgnoreCase)
+                ? ConnectionStatus.Connected
+                : ConnectionStatus.Degraded;
+        }
     }
 }
 
@@ -174,6 +249,7 @@ public sealed class WebhookRegistration : TenantScopedEntity
     public string? SecretPrefix { get; private set; }
     public int SecretVersion { get; private set; } = 1;
     public DateTimeOffset? SecretRotatedAt { get; private set; }
+    public string? ApplicationCode { get; private set; }
     public string? Description { get; private set; }
     public bool IsActive { get; private set; } = true;
 
@@ -184,7 +260,8 @@ public sealed class WebhookRegistration : TenantScopedEntity
         string signingSecretRef,
         string? description = null,
         string? secretHash = null,
-        string? secretPrefix = null)
+        string? secretPrefix = null,
+        string? applicationCode = null)
     {
         if (string.IsNullOrWhiteSpace(eventType) || !Uri.TryCreate(targetUrl, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
         {
@@ -215,6 +292,7 @@ public sealed class WebhookRegistration : TenantScopedEntity
             SigningSecretHash = secretHash,
             SecretPrefix = secretPrefix,
             SecretVersion = 1,
+            ApplicationCode = string.IsNullOrWhiteSpace(applicationCode) ? null : applicationCode.Trim().ToUpperInvariant(),
             Description = description?.Trim(),
             IsActive = true
         };
@@ -270,6 +348,8 @@ public sealed class WebhookDelivery : TenantScopedEntity
     public long TimestampUnix { get; private set; }
     public string? SignatureDigestPrefix { get; private set; }
     public string? FailureReason { get; private set; }
+    public string? ResponseSnippet { get; private set; }
+    public double? DurationMs { get; private set; }
     public DateTimeOffset AttemptedAt { get; private set; }
     public DateTimeOffset? CompletedAt { get; private set; }
 
@@ -283,7 +363,10 @@ public sealed class WebhookDelivery : TenantScopedEntity
         long timestampUnix,
         string? signaturePrefix,
         string? failureReason,
-        DateTimeOffset utcNow)
+        DateTimeOffset utcNow,
+        int attemptCount = 1,
+        string? responseSnippet = null,
+        double? durationMs = null)
     {
         var d = new WebhookDelivery
         {
@@ -292,11 +375,13 @@ public sealed class WebhookDelivery : TenantScopedEntity
             EventId = eventId,
             EventType = eventType.Trim(),
             Status = status,
-            AttemptCount = 1,
+            AttemptCount = Math.Max(1, attemptCount),
             HttpStatusCode = httpStatusCode,
             TimestampUnix = timestampUnix,
             SignatureDigestPrefix = signaturePrefix,
             FailureReason = failureReason?.Length > 1000 ? failureReason[..1000] : failureReason,
+            ResponseSnippet = responseSnippet?.Length > 512 ? responseSnippet[..512] : responseSnippet,
+            DurationMs = durationMs.HasValue ? Math.Round(Math.Max(0, durationMs.Value), 2) : null,
             AttemptedAt = utcNow,
             CompletedAt = status == WebhookDeliveryStatus.Pending ? null : utcNow
         };

@@ -10,16 +10,70 @@ using Nexus.SharedKernel.Results;
 
 namespace Nexus.Modules.Integration.Application;
 
-public sealed record CreateProviderRequest(string Code, string Name, string Category, int MaxRetries = 3, int TimeoutSeconds = 30);
-public sealed record ProviderDto(Guid Id, string Code, string Name, string Category, bool IsActive, int DefaultMaxRetries, int DefaultTimeoutSeconds);
-public sealed record CreateConnectionRequest(Guid ProviderId, string Name, string CredentialReference, int MaxRetries = 3, int TimeoutSeconds = 30);
-public sealed record ConnectionDto(Guid Id, Guid TenantId, Guid ProviderId, string Name, string CredentialReference, string Status, int MaxRetries, int TimeoutSeconds, DateTimeOffset? LastSyncedAt);
+public sealed record CreateProviderRequest(
+    string Code,
+    string Name,
+    string Category,
+    int MaxRetries = 3,
+    int TimeoutSeconds = 30,
+    string? Version = null,
+    string? AllowedHosts = null,
+    string? ConfigSchemaJson = null,
+    bool RequiresSecretRef = true);
+
+public sealed record ProviderDto(
+    Guid Id,
+    string Code,
+    string Name,
+    string Category,
+    bool IsActive,
+    int DefaultMaxRetries,
+    int DefaultTimeoutSeconds,
+    string Version = "1.0",
+    string? AllowedHosts = null,
+    bool RequiresSecretRef = true);
+
+public sealed record CreateConnectionRequest(
+    Guid ProviderId,
+    string Name,
+    string CredentialReference,
+    int MaxRetries = 3,
+    int TimeoutSeconds = 30,
+    string? ApplicationCode = null,
+    Dictionary<string, object>? NonSecretConfig = null);
+
+public sealed record RotateConnectionCredentialRefRequest(string CredentialReference);
+
+public sealed record ConnectionTestResultDto(
+    Guid ConnectionId,
+    string HealthStatus,
+    bool Passed,
+    string Summary,
+    DateTimeOffset CheckedAt);
+
+public sealed record ConnectionDto(
+    Guid Id,
+    Guid TenantId,
+    Guid ProviderId,
+    string Name,
+    string CredentialReference,
+    string Status,
+    int MaxRetries,
+    int TimeoutSeconds,
+    DateTimeOffset? LastSyncedAt,
+    string? ApplicationCode = null,
+    string HealthStatus = "Unknown",
+    DateTimeOffset? LastHealthCheckAt = null,
+    DateTimeOffset? DisabledAt = null,
+    string? NonSecretConfigJson = null);
+
 public sealed record RecordSyncRequest(string Direction, SyncStatus Status, int RecordsProcessed, string? Summary, string? ErrorCode = null, string? ErrorMessage = null);
 public sealed record SyncLogDto(Guid Id, Guid ConnectionId, string Direction, string Status, int RecordsProcessed, string? Summary, DateTimeOffset StartedAt, DateTimeOffset? CompletedAt);
 public sealed record IntegrationErrorDto(Guid Id, Guid TenantId, Guid ConnectionId, string ErrorCode, string Message, int AttemptNumber, DateTimeOffset OccurredAt);
 
-public sealed record CreateWebhookRequest(string EventType, string TargetUrl, string SigningSecretRef, string? Description = null);
+public sealed record CreateWebhookRequest(string EventType, string TargetUrl, string SigningSecretRef, string? Description = null, string? ApplicationCode = null);
 public sealed record UpdateWebhookRequest(string EventType, string TargetUrl, string? Description = null);
+public sealed record DispatchWebhookRequest(Guid? EventId, string PayloadJson, int MaxAttempts = 3);
 public sealed record WebhookDto(
     Guid Id,
     Guid TenantId,
@@ -29,7 +83,8 @@ public sealed record WebhookDto(
     string? Description = null,
     int SecretVersion = 1,
     string? SecretPrefix = null,
-    DateTimeOffset? SecretRotatedAt = null);
+    DateTimeOffset? SecretRotatedAt = null,
+    string? ApplicationCode = null);
 
 public sealed record WebhookSecretRotationDto(WebhookDto Webhook, string SigningSecret);
 
@@ -53,7 +108,9 @@ public sealed record WebhookDeliveryDto(
     string? SignatureDigestPrefix,
     string? FailureReason,
     DateTimeOffset AttemptedAt,
-    DateTimeOffset? CompletedAt);
+    DateTimeOffset? CompletedAt,
+    string? ResponseSnippet = null,
+    double? DurationMs = null);
 
 public sealed record RegisterAiModelRequest(string ModelCode, string ProviderName, int TimeoutSeconds = 30, int MaxTokensLimit = 2048);
 public sealed record AiModelDto(Guid Id, string ModelCode, string ProviderName, int TimeoutSeconds, int MaxTokensLimit, bool IsEnabled);
@@ -61,10 +118,15 @@ public sealed record InvokeAiRequest(string ModelCode, string Prompt, int MaxTok
 
 public interface IIntegrationService
 {
+    Task SeedCanonicalProvidersAsync(CancellationToken ct = default);
     Task<Result<ProviderDto>> RegisterProviderAsync(CreateProviderRequest request, CancellationToken ct = default);
     Task<Result<IReadOnlyList<ProviderDto>>> ListProvidersAsync(CancellationToken ct = default);
     Task<Result<ConnectionDto>> CreateConnectionAsync(CreateConnectionRequest request, CancellationToken ct = default);
     Task<Result<IReadOnlyList<ConnectionDto>>> ListConnectionsAsync(CancellationToken ct = default);
+    Task<Result<ConnectionTestResultDto>> TestConnectionAsync(Guid connectionId, CancellationToken ct = default);
+    Task<Result<ConnectionDto>> SetConnectionActiveAsync(Guid connectionId, bool isActive, CancellationToken ct = default);
+    Task<Result<ConnectionDto>> RotateConnectionCredentialRefAsync(Guid connectionId, RotateConnectionCredentialRefRequest request, CancellationToken ct = default);
+    Task<Result> DeleteConnectionAsync(Guid connectionId, CancellationToken ct = default);
     Task<Result<SyncLogDto>> RecordSyncAsync(Guid connectionId, RecordSyncRequest request, CancellationToken ct = default);
     Task<Result<IReadOnlyList<SyncLogDto>>> ListSyncLogsAsync(Guid connectionId, CancellationToken ct = default);
     Task<Result<IReadOnlyList<IntegrationErrorDto>>> ListErrorsAsync(CancellationToken ct = default);
@@ -75,6 +137,7 @@ public interface IIntegrationService
     Task<Result<WebhookDto>> SetWebhookActiveAsync(Guid webhookId, bool isActive, CancellationToken ct = default);
     Task<Result> DeleteWebhookAsync(Guid webhookId, CancellationToken ct = default);
     Task<Result<WebhookSecretRotationDto>> RotateWebhookSecretAsync(Guid webhookId, CancellationToken ct = default);
+    Task<Result<WebhookDeliveryDto>> DispatchWebhookAsync(Guid webhookId, DispatchWebhookRequest request, CancellationToken ct = default);
     Task<Result<WebhookDeliveryDto>> RecordWebhookDeliveryAsync(Guid webhookId, RecordWebhookDeliveryRequest request, CancellationToken ct = default);
     Task<Result<IReadOnlyList<WebhookDeliveryDto>>> ListWebhookDeliveriesAsync(Guid webhookId, CancellationToken ct = default);
     Task<Result<WebhookDeliveryDto>> RetryWebhookDeliveryAsync(Guid deliveryId, CancellationToken ct = default);
@@ -90,11 +153,55 @@ public sealed class IntegrationService(
     ISystemClock clock,
     IEntitlementChecker entitlementChecker,
     IAiProvider aiProvider,
+    IWebhookHttpDispatcher webhookDispatcher,
     IAuditWriter auditWriter) : IIntegrationService
 {
+    public async Task SeedCanonicalProvidersAsync(CancellationToken ct = default)
+    {
+        var existingCodes = await db.Providers.AsNoTracking()
+            .Select(p => p.Code)
+            .ToListAsync(ct);
+        var set = existingCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        (string Code, string Name, string Category, string AllowedHosts, bool RequiresSecret)[] canonical =
+        [
+            ("RESEND", "Resend Transactional Email", "Email", "api.resend.com", true),
+            ("CLERK", "Clerk Authentication & Identity", "Identity", "api.clerk.com", true),
+            ("S3_STORAGE", "S3-Compatible Object Storage", "Storage", "", true),
+            ("RABBITMQ", "RabbitMQ Message Broker", "Messaging", "", true),
+            ("FX_FRANKFURTER", "Frankfurter ECB Reference FX", "ReferenceData", "api.frankfurter.app", false)
+        ];
+
+        var added = false;
+        foreach (var item in canonical)
+        {
+            if (set.Contains(item.Code)) continue;
+            var res = ProviderDefinition.Create(item.Code, item.Name, item.Category, 3, 15, "1.0", item.AllowedHosts, null, item.RequiresSecret);
+            if (res.IsSuccess)
+            {
+                db.Providers.Add(res.Value);
+                added = true;
+            }
+        }
+
+        if (added)
+        {
+            await db.SaveChangesAsync(ct);
+        }
+    }
+
     public async Task<Result<ProviderDto>> RegisterProviderAsync(CreateProviderRequest request, CancellationToken ct = default)
     {
-        var created = ProviderDefinition.Create(request.Code, request.Name, request.Category, request.MaxRetries, request.TimeoutSeconds);
+        var created = ProviderDefinition.Create(
+            request.Code,
+            request.Name,
+            request.Category,
+            request.MaxRetries,
+            request.TimeoutSeconds,
+            request.Version,
+            request.AllowedHosts,
+            request.ConfigSchemaJson,
+            request.RequiresSecretRef);
         if (created.IsFailure) return Result.Failure<ProviderDto>(created.Error);
 
         var provider = created.Value;
@@ -106,14 +213,14 @@ public sealed class IntegrationService(
         db.Providers.Add(provider);
         await db.SaveChangesAsync(ct);
 
-        return new ProviderDto(provider.Id, provider.Code, provider.Name, provider.Category, provider.IsActive, provider.DefaultMaxRetries, provider.DefaultTimeoutSeconds);
+        return MapProvider(provider);
     }
 
     public async Task<Result<IReadOnlyList<ProviderDto>>> ListProvidersAsync(CancellationToken ct = default)
     {
         var list = await db.Providers.AsNoTracking()
             .OrderBy(p => p.Name)
-            .Select(p => new ProviderDto(p.Id, p.Code, p.Name, p.Category, p.IsActive, p.DefaultMaxRetries, p.DefaultTimeoutSeconds))
+            .Select(p => MapProvider(p))
             .ToListAsync(ct);
 
         return list;
@@ -129,7 +236,30 @@ public sealed class IntegrationService(
             return Error.NotFound("PROVIDER_NOT_FOUND", "Integration provider not found.");
         }
 
-        var created = IntegrationConnection.Create(tenantId, request.ProviderId, request.Name, request.CredentialReference, request.MaxRetries, request.TimeoutSeconds);
+        // Guard against plaintext secrets sneaking into NonSecretConfig
+        if (request.NonSecretConfig is not null)
+        {
+            foreach (var key in request.NonSecretConfig.Keys)
+            {
+                if (SensitiveDataRedactor.IsSensitiveKey(key))
+                {
+                    return Error.Validation(
+                        "CONNECTION_SECRET_IN_CONFIG_FORBIDDEN",
+                        $"Sensitive field '{key}' cannot be stored in NonSecretConfig. Use CredentialReference (vault://, env://, or kms://).");
+                }
+            }
+        }
+
+        var configJson = request.NonSecretConfig is null ? null : SensitiveDataRedactor.SanitizeToJson(request.NonSecretConfig);
+        var created = IntegrationConnection.Create(
+            tenantId,
+            request.ProviderId,
+            request.Name,
+            request.CredentialReference,
+            request.MaxRetries,
+            request.TimeoutSeconds,
+            request.ApplicationCode,
+            configJson);
         if (created.IsFailure) return Result.Failure<ConnectionDto>(created.Error);
 
         var conn = created.Value;
@@ -138,9 +268,9 @@ public sealed class IntegrationService(
 
         await auditWriter.WriteAsync(new AuditEntryRequest(
             "integration.connection.create", "IntegrationConnection", conn.Id.ToString("D"), tenantId, "Success",
-            AfterState: new { conn.Name, conn.ProviderId, Status = conn.Status.ToString() }), ct);
+            AfterState: new { conn.Name, conn.ProviderId, conn.ApplicationCode, Status = conn.Status.ToString() }), ct);
 
-        return new ConnectionDto(conn.Id, conn.TenantId, conn.ProviderId, conn.Name, conn.CredentialReference, conn.Status.ToString(), conn.MaxRetries, conn.TimeoutSeconds, conn.LastSyncedAt);
+        return MapConnection(conn);
     }
 
     public async Task<Result<IReadOnlyList<ConnectionDto>>> ListConnectionsAsync(CancellationToken ct = default)
@@ -149,10 +279,164 @@ public sealed class IntegrationService(
 
         var list = await db.Connections.AsNoTracking()
             .OrderBy(c => c.Name)
-            .Select(c => new ConnectionDto(c.Id, c.TenantId, c.ProviderId, c.Name, c.CredentialReference, c.Status.ToString(), c.MaxRetries, c.TimeoutSeconds, c.LastSyncedAt))
+            .Select(c => MapConnection(c))
             .ToListAsync(ct);
 
         return list;
+    }
+
+    public async Task<Result<ConnectionTestResultDto>> TestConnectionAsync(Guid connectionId, CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+        var tenantId = tenantContext.TenantId!.Value;
+
+        var conn = await db.Connections.FirstOrDefaultAsync(c => c.Id == connectionId, ct);
+        if (conn is null) return Error.NotFound("CONNECTION_NOT_FOUND", "Integration connection not found.");
+
+        var provider = await db.Providers.AsNoTracking().FirstOrDefaultAsync(p => p.Id == conn.ProviderId, ct);
+        var now = clock.UtcNow;
+
+        if (conn.Status == ConnectionStatus.Disconnected)
+        {
+            return new ConnectionTestResultDto(conn.Id, "Disabled", false, "Connection is disabled. Reconnect before testing.", now);
+        }
+
+        var passed = IntegrationConnection.IsValidSecretReference(conn.CredentialReference);
+        var summary = passed
+            ? $"Credential reference validated ({conn.CredentialReference.Split("://")[0]}://) for provider '{provider?.Code ?? "UNKNOWN"}'."
+            : "Invalid credential reference format.";
+
+        // If NonSecretConfig contains an endpointUrl, verify SSRF + provider AllowedHosts!
+        if (passed && !string.IsNullOrWhiteSpace(conn.NonSecretConfigJson))
+        {
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(conn.NonSecretConfigJson);
+                if (doc.RootElement.TryGetProperty("endpointUrl", out var urlProp) && urlProp.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    var rawUrl = urlProp.GetString();
+                    if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri))
+                    {
+                        passed = false;
+                        summary = "Configured endpointUrl is not a valid absolute URI.";
+                    }
+                    else
+                    {
+                        var allowed = string.IsNullOrWhiteSpace(provider?.AllowedHosts)
+                            ? null
+                            : provider.AllowedHosts.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+                        if (SsrfGuard.IsUnsafeTarget(uri))
+                        {
+                            passed = false;
+                            summary = "Configured endpointUrl blocked by SSRF protection (internal/private target).";
+                        }
+                        else if (allowed is { Length: > 0 } && !allowed.Any(h => string.Equals(h, uri.DnsSafeHost, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            passed = false;
+                            summary = $"Host '{uri.DnsSafeHost}' is not in provider AllowedHosts ({provider!.AllowedHosts}).";
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                passed = false;
+                summary = "NonSecretConfigJson could not be parsed.";
+            }
+        }
+
+        var health = passed ? "Healthy" : "Degraded";
+        conn.RecordHealthCheck(health, now);
+        await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "integration.connection.test", "IntegrationConnection", conn.Id.ToString("D"), tenantId, passed ? "Success" : "Failed",
+            Reason: summary,
+            AfterState: new { conn.HealthStatus, conn.LastHealthCheckAt }), ct);
+
+        return new ConnectionTestResultDto(conn.Id, health, passed, summary, now);
+    }
+
+    public async Task<Result<ConnectionDto>> SetConnectionActiveAsync(Guid connectionId, bool isActive, CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+        var tenantId = tenantContext.TenantId!.Value;
+
+        var conn = await db.Connections.FirstOrDefaultAsync(c => c.Id == connectionId, ct);
+        if (conn is null) return Error.NotFound("CONNECTION_NOT_FOUND", "Integration connection not found.");
+
+        if (isActive) conn.Reconnect();
+        else conn.Disable(clock.UtcNow);
+
+        await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            isActive ? "integration.connection.reconnect" : "integration.connection.disable",
+            "IntegrationConnection", conn.Id.ToString("D"), tenantId, "Success",
+            AfterState: new { Status = conn.Status.ToString(), conn.HealthStatus, conn.DisabledAt }), ct);
+
+        return MapConnection(conn);
+    }
+
+    public async Task<Result<ConnectionDto>> RotateConnectionCredentialRefAsync(Guid connectionId, RotateConnectionCredentialRefRequest request, CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+        var tenantId = tenantContext.TenantId!.Value;
+
+        var conn = await db.Connections.FirstOrDefaultAsync(c => c.Id == connectionId, ct);
+        if (conn is null) return Error.NotFound("CONNECTION_NOT_FOUND", "Integration connection not found.");
+
+        var prevRef = conn.CredentialReference;
+        var res = conn.RotateCredentialReference(request.CredentialReference);
+        if (res.IsFailure) return Result.Failure<ConnectionDto>(res.Error);
+
+        await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "integration.connection.rotate_credential_ref", "IntegrationConnection", conn.Id.ToString("D"), tenantId, "Success",
+            BeforeState: new { CredentialReference = prevRef },
+            AfterState: new { conn.CredentialReference }), ct);
+
+        return MapConnection(conn);
+    }
+
+    public async Task<Result> DeleteConnectionAsync(Guid connectionId, CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Result.Failure(Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required."));
+        var tenantId = tenantContext.TenantId!.Value;
+
+        var conn = await db.Connections.FirstOrDefaultAsync(c => c.Id == connectionId, ct);
+        if (conn is null) return Result.Failure(Error.NotFound("CONNECTION_NOT_FOUND", "Integration connection not found."));
+
+        var hasRunningSync = await db.SyncLogs.AsNoTracking().AnyAsync(s => s.ConnectionId == connectionId && s.Status == SyncStatus.Running, ct);
+        if (hasRunningSync)
+        {
+            return Result.Failure(Error.BusinessRule("CONNECTION_IN_USE", "Cannot delete a connection while a sync operation is currently running."));
+        }
+
+        // Remove dependent logs/errors cleanly or disable if historical audit logs exist
+        var hasHistory = await db.SyncLogs.AsNoTracking().AnyAsync(s => s.ConnectionId == connectionId, ct)
+                         || await db.Errors.AsNoTracking().AnyAsync(e => e.ConnectionId == connectionId, ct);
+        if (hasHistory)
+        {
+            conn.Disable(clock.UtcNow);
+            await db.SaveChangesAsync(ct);
+
+            await auditWriter.WriteAsync(new AuditEntryRequest(
+                "integration.connection.archive_on_delete", "IntegrationConnection", conn.Id.ToString("D"), tenantId, "Success",
+                Reason: "Connection has historical sync/error logs; disabled instead of hard-deleted to preserve history."), ct);
+            return Result.Success();
+        }
+
+        db.Connections.Remove(conn);
+        await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "integration.connection.delete", "IntegrationConnection", connectionId.ToString("D"), tenantId, "Success",
+            BeforeState: new { conn.Name, conn.ProviderId }), ct);
+
+        return Result.Success();
     }
 
     public async Task<Result<SyncLogDto>> RecordSyncAsync(Guid connectionId, RecordSyncRequest request, CancellationToken ct = default)
@@ -215,7 +499,7 @@ public sealed class IntegrationService(
         if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
         var tenantId = tenantContext.TenantId!.Value;
 
-        var created = WebhookRegistration.Create(tenantId, request.EventType, request.TargetUrl, request.SigningSecretRef, request.Description);
+        var created = WebhookRegistration.Create(tenantId, request.EventType, request.TargetUrl, request.SigningSecretRef, request.Description, applicationCode: request.ApplicationCode);
         if (created.IsFailure) return Result.Failure<WebhookDto>(created.Error);
 
         var wh = created.Value;
@@ -318,6 +602,58 @@ public sealed class IntegrationService(
             AfterState: new { wh.SecretVersion, wh.SecretPrefix, wh.SecretRotatedAt }), ct);
 
         return new WebhookSecretRotationDto(MapWebhook(wh), rawSecret);
+    }
+
+    public async Task<Result<WebhookDeliveryDto>> DispatchWebhookAsync(Guid webhookId, DispatchWebhookRequest request, CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+        var tenantId = tenantContext.TenantId!.Value;
+
+        var wh = await db.Webhooks.AsNoTracking().FirstOrDefaultAsync(w => w.Id == webhookId, ct);
+        if (wh is null) return Error.NotFound("WEBHOOK_NOT_FOUND", "Webhook registration was not found.");
+        if (!wh.IsActive) return Error.BusinessRule("WEBHOOK_DISABLED", "Cannot dispatch events to a disabled webhook.");
+
+        var now = clock.UtcNow;
+        var ts = now.ToUnixTimeSeconds();
+        var eventId = request.EventId ?? Guid.CreateVersion7();
+        var payloadJson = string.IsNullOrWhiteSpace(request.PayloadJson) ? "{}" : request.PayloadJson;
+        var signingKey = wh.SigningSecretHash ?? wh.SigningSecretRef;
+
+        var outcome = await webhookDispatcher.DispatchAsync(
+            new WebhookDispatchRequest(eventId, wh.EventType, wh.TargetUrl, payloadJson, signingKey, ts, request.MaxAttempts),
+            ct);
+
+        var status = outcome.Succeeded ? WebhookDeliveryStatus.Succeeded : WebhookDeliveryStatus.Failed;
+        var delivery = WebhookDelivery.Record(
+            tenantId,
+            wh.Id,
+            eventId,
+            wh.EventType,
+            status,
+            outcome.HttpStatusCode,
+            ts,
+            outcome.SignatureDigestPrefix,
+            outcome.FailureReason,
+            now,
+            outcome.AttemptsMade,
+            outcome.ResponseSnippet,
+            outcome.DurationMs);
+
+        db.WebhookDeliveries.Add(delivery);
+        await db.SaveChangesAsync(ct);
+
+        NexusPlatformMetrics.WebhookDeliveries.Add(1, new KeyValuePair<string, object?>("status", delivery.Status.ToString().ToLowerInvariant()));
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "integration.webhook.dispatch",
+            "WebhookDelivery",
+            delivery.Id.ToString("D"),
+            tenantId,
+            outcome.Succeeded ? "Success" : "Failed",
+            Reason: outcome.FailureReason,
+            AfterState: new { wh.Id, eventId, outcome.HttpStatusCode, outcome.AttemptsMade, outcome.BlockedBySsrf }), ct);
+
+        return MapDelivery(delivery);
     }
 
     public async Task<Result<WebhookDeliveryDto>> RecordWebhookDeliveryAsync(Guid webhookId, RecordWebhookDeliveryRequest request, CancellationToken ct = default)
@@ -443,11 +779,20 @@ public sealed class IntegrationService(
         return response;
     }
 
+    private static ProviderDto MapProvider(ProviderDefinition p) => new(
+        p.Id, p.Code, p.Name, p.Category, p.IsActive, p.DefaultMaxRetries, p.DefaultTimeoutSeconds,
+        p.Version, p.AllowedHosts, p.RequiresSecretRef);
+
+    private static ConnectionDto MapConnection(IntegrationConnection c) => new(
+        c.Id, c.TenantId, c.ProviderId, c.Name, c.CredentialReference, c.Status.ToString(),
+        c.MaxRetries, c.TimeoutSeconds, c.LastSyncedAt, c.ApplicationCode, c.HealthStatus,
+        c.LastHealthCheckAt, c.DisabledAt, c.NonSecretConfigJson);
+
     private static WebhookDto MapWebhook(WebhookRegistration w) => new(
-        w.Id, w.TenantId, w.EventType, w.TargetUrl, w.IsActive, w.Description, w.SecretVersion, w.SecretPrefix, w.SecretRotatedAt);
+        w.Id, w.TenantId, w.EventType, w.TargetUrl, w.IsActive, w.Description, w.SecretVersion, w.SecretPrefix, w.SecretRotatedAt, w.ApplicationCode);
 
     private static WebhookDeliveryDto MapDelivery(WebhookDelivery d) => new(
         d.Id, d.TenantId, d.WebhookId, d.EventId, d.EventType, d.Status.ToString(),
         d.AttemptCount, d.HttpStatusCode, d.TimestampUnix, d.SignatureDigestPrefix,
-        d.FailureReason, d.AttemptedAt, d.CompletedAt);
+        d.FailureReason, d.AttemptedAt, d.CompletedAt, d.ResponseSnippet, d.DurationMs);
 }

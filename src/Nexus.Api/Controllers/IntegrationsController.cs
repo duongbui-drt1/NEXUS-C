@@ -29,6 +29,31 @@ public sealed class IntegrationsController(IIntegrationService integrationServic
     public async Task<IActionResult> ListConnections(CancellationToken ct)
         => (await integrationService.ListConnectionsAsync(ct)).ToActionResult(HttpContext);
 
+    [HttpPost("connections/{connectionId:guid}/test")]
+    [RequirePermission(Permissions.IntegrationsManage)]
+    public async Task<IActionResult> TestConnection(Guid connectionId, CancellationToken ct)
+        => (await integrationService.TestConnectionAsync(connectionId, ct)).ToActionResult(HttpContext);
+
+    [HttpPost("connections/{connectionId:guid}/disable")]
+    [RequirePermission(Permissions.IntegrationsManage)]
+    public async Task<IActionResult> DisableConnection(Guid connectionId, CancellationToken ct)
+        => (await integrationService.SetConnectionActiveAsync(connectionId, false, ct)).ToActionResult(HttpContext);
+
+    [HttpPost("connections/{connectionId:guid}/reconnect")]
+    [RequirePermission(Permissions.IntegrationsManage)]
+    public async Task<IActionResult> ReconnectConnection(Guid connectionId, CancellationToken ct)
+        => (await integrationService.SetConnectionActiveAsync(connectionId, true, ct)).ToActionResult(HttpContext);
+
+    [HttpPost("connections/{connectionId:guid}/rotate-credential-ref")]
+    [RequirePermission(Permissions.IntegrationsManage)]
+    public async Task<IActionResult> RotateConnectionCredentialRef(Guid connectionId, [FromBody] RotateConnectionCredentialRefRequest request, CancellationToken ct)
+        => (await integrationService.RotateConnectionCredentialRefAsync(connectionId, request, ct)).ToActionResult(HttpContext);
+
+    [HttpDelete("connections/{connectionId:guid}")]
+    [RequirePermission(Permissions.IntegrationsManage)]
+    public async Task<IActionResult> DeleteConnection(Guid connectionId, CancellationToken ct)
+        => (await integrationService.DeleteConnectionAsync(connectionId, ct)).ToActionResult(HttpContext);
+
     [HttpPost("connections/{connectionId:guid}/sync-logs")]
     [RequirePermission(Permissions.IntegrationsManage)]
     public async Task<IActionResult> RecordSync(Guid connectionId, [FromBody] RecordSyncRequest request, CancellationToken ct)
@@ -78,6 +103,11 @@ public sealed class IntegrationsController(IIntegrationService integrationServic
     [RequirePermission(Permissions.IntegrationsManage)]
     public async Task<IActionResult> RotateWebhookSecret(Guid webhookId, CancellationToken ct)
         => (await integrationService.RotateWebhookSecretAsync(webhookId, ct)).ToActionResult(HttpContext);
+
+    [HttpPost("webhooks/{webhookId:guid}/dispatch")]
+    [RequirePermission(Permissions.IntegrationsManage)]
+    public async Task<IActionResult> DispatchWebhook(Guid webhookId, [FromBody] DispatchWebhookRequest request, CancellationToken ct)
+        => (await integrationService.DispatchWebhookAsync(webhookId, request, ct)).ToActionResult(HttpContext, StatusCodes.Status201Created);
 
     [HttpGet("webhooks/{webhookId:guid}/deliveries")]
     [RequirePermission(Permissions.IntegrationsRead)]

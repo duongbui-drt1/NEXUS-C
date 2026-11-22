@@ -216,6 +216,10 @@ namespace Nexus.Modules.Integration.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("ApplicationCode")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -227,6 +231,19 @@ namespace Nexus.Modules.Integration.Infrastructure.Migrations
                         .HasMaxLength(300)
                         .HasColumnType("character varying(300)");
 
+                    b.Property<DateTimeOffset?>("DisabledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("HealthStatus")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("Unknown");
+
+                    b.Property<DateTimeOffset?>("LastHealthCheckAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTimeOffset?>("LastSyncedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -237,6 +254,9 @@ namespace Nexus.Modules.Integration.Infrastructure.Migrations
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
+
+                    b.Property<string>("NonSecretConfigJson")
+                        .HasColumnType("jsonb");
 
                     b.Property<Guid>("ProviderId")
                         .HasColumnType("uuid");
@@ -333,6 +353,10 @@ namespace Nexus.Modules.Integration.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("AllowedHosts")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
                     b.Property<string>("Category")
                         .IsRequired()
                         .HasMaxLength(64)
@@ -342,6 +366,9 @@ namespace Nexus.Modules.Integration.Infrastructure.Migrations
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
+
+                    b.Property<string>("ConfigSchemaJson")
+                        .HasColumnType("jsonb");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -363,6 +390,11 @@ namespace Nexus.Modules.Integration.Infrastructure.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
+                    b.Property<bool>("RequiresSecretRef")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
                     b.Property<uint>("RowVersion")
                         .IsConcurrencyToken()
                         .ValueGeneratedOnAddOrUpdate()
@@ -374,6 +406,13 @@ namespace Nexus.Modules.Integration.Infrastructure.Migrations
 
                     b.Property<Guid?>("UpdatedBy")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("1.0");
 
                     b.HasKey("Id");
 
@@ -464,6 +503,9 @@ namespace Nexus.Modules.Integration.Infrastructure.Migrations
                     b.Property<Guid?>("CreatedBy")
                         .HasColumnType("uuid");
 
+                    b.Property<double?>("DurationMs")
+                        .HasColumnType("double precision");
+
                     b.Property<Guid>("EventId")
                         .HasColumnType("uuid");
 
@@ -478,6 +520,10 @@ namespace Nexus.Modules.Integration.Infrastructure.Migrations
 
                     b.Property<int?>("HttpStatusCode")
                         .HasColumnType("integer");
+
+                    b.Property<string>("ResponseSnippet")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
 
                     b.Property<uint>("RowVersion")
                         .IsConcurrencyToken()
@@ -523,6 +569,10 @@ namespace Nexus.Modules.Integration.Infrastructure.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
+
+                    b.Property<string>("ApplicationCode")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");

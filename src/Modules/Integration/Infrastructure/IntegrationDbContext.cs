@@ -32,6 +32,10 @@ public sealed class IntegrationDbContext(
             e.Property(x => x.Code).HasMaxLength(64).IsRequired();
             e.Property(x => x.Name).HasMaxLength(200).IsRequired();
             e.Property(x => x.Category).HasMaxLength(64).IsRequired();
+            e.Property(x => x.Version).HasMaxLength(32).HasDefaultValue("1.0").IsRequired();
+            e.Property(x => x.AllowedHosts).HasMaxLength(500);
+            e.Property(x => x.ConfigSchemaJson).HasColumnType("jsonb");
+            e.Property(x => x.RequiresSecretRef).HasDefaultValue(true).IsRequired();
             e.HasIndex(x => x.Code).IsUnique();
         });
 
@@ -40,8 +44,11 @@ public sealed class IntegrationDbContext(
             e.ToTable("connections", SchemaName);
             e.HasKey(x => x.Id);
             e.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            e.Property(x => x.ApplicationCode).HasMaxLength(40);
             e.Property(x => x.CredentialReference).HasMaxLength(300).IsRequired();
+            e.Property(x => x.NonSecretConfigJson).HasColumnType("jsonb");
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32).IsRequired();
+            e.Property(x => x.HealthStatus).HasMaxLength(32).HasDefaultValue("Unknown").IsRequired();
             e.HasIndex(x => new { x.TenantId, x.Name }).IsUnique();
             e.HasOne<ProviderDefinition>().WithMany().HasForeignKey(x => x.ProviderId).OnDelete(DeleteBehavior.Restrict);
         });
@@ -75,6 +82,7 @@ public sealed class IntegrationDbContext(
             e.Property(x => x.SigningSecretHash).HasMaxLength(128);
             e.Property(x => x.SecretPrefix).HasMaxLength(32);
             e.Property(x => x.SecretVersion).HasDefaultValue(1).IsRequired();
+            e.Property(x => x.ApplicationCode).HasMaxLength(40);
             e.Property(x => x.Description).HasMaxLength(500);
             e.HasIndex(x => new { x.TenantId, x.EventType });
         });
@@ -87,6 +95,7 @@ public sealed class IntegrationDbContext(
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32).IsRequired();
             e.Property(x => x.SignatureDigestPrefix).HasMaxLength(32);
             e.Property(x => x.FailureReason).HasMaxLength(1000);
+            e.Property(x => x.ResponseSnippet).HasMaxLength(512);
             e.HasIndex(x => new { x.TenantId, x.WebhookId, x.AttemptedAt });
             e.HasOne<WebhookRegistration>().WithMany().HasForeignKey(x => x.WebhookId).OnDelete(DeleteBehavior.Cascade);
         });
