@@ -179,6 +179,7 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
             ("integration", "webhooks"),
             ("integration", "webhook_deliveries"),
             ("integration", "ai_usage_logs"),
+            ("integration", "ai_capability_policies"),
             ("notification", "templates"),
             ("notification", "notifications"),
             ("notification", "preferences"),

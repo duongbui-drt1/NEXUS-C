@@ -114,7 +114,38 @@ public sealed record WebhookDeliveryDto(
 
 public sealed record RegisterAiModelRequest(string ModelCode, string ProviderName, int TimeoutSeconds = 30, int MaxTokensLimit = 2048);
 public sealed record AiModelDto(Guid Id, string ModelCode, string ProviderName, int TimeoutSeconds, int MaxTokensLimit, bool IsEnabled);
-public sealed record InvokeAiRequest(string ModelCode, string Prompt, int MaxTokens = 256, Dictionary<string, object>? Metadata = null);
+public sealed record InvokeAiRequest(
+    string ModelCode,
+    string Prompt,
+    int MaxTokens = 256,
+    Dictionary<string, object>? Metadata = null,
+    string CapabilityCode = "DEFAULT",
+    bool IsConsequentialAction = false,
+    string? HumanApprovalToken = null);
+
+public sealed record UpsertAiPolicyRequest(
+    string CapabilityCode,
+    bool IsEnabled = true,
+    bool KillSwitchActive = false,
+    bool RequireHumanApproval = false,
+    long MonthlyTokenBudget = 100_000,
+    string? AllowedTools = null,
+    string? PromptTemplateVersion = "v1",
+    string? DataClassification = "Internal");
+
+public sealed record AiCapabilityPolicyDto(
+    Guid Id,
+    Guid TenantId,
+    string CapabilityCode,
+    bool IsEnabled,
+    bool KillSwitchActive,
+    bool RequireHumanApproval,
+    long MonthlyTokenBudget,
+    string? AllowedTools,
+    string PromptTemplateVersion,
+    string DataClassification,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? UpdatedAt);
 
 public interface IIntegrationService
 {
@@ -143,6 +174,8 @@ public interface IIntegrationService
     Task<Result<WebhookDeliveryDto>> RetryWebhookDeliveryAsync(Guid deliveryId, CancellationToken ct = default);
 
     Task<Result<AiModelDto>> RegisterAiModelAsync(RegisterAiModelRequest request, CancellationToken ct = default);
+    Task<Result<IReadOnlyList<AiCapabilityPolicyDto>>> ListAiPoliciesAsync(CancellationToken ct = default);
+    Task<Result<AiCapabilityPolicyDto>> UpsertAiPolicyAsync(UpsertAiPolicyRequest request, CancellationToken ct = default);
     Task<Result<AiCompletionResponse>> InvokeAiGatewayAsync(InvokeAiRequest request, CancellationToken ct = default);
 }
 
@@ -154,7 +187,8 @@ public sealed class IntegrationService(
     IEntitlementChecker entitlementChecker,
     IAiProvider aiProvider,
     IWebhookHttpDispatcher webhookDispatcher,
-    IAuditWriter auditWriter) : IIntegrationService
+    IAuditWriter auditWriter,
+    IPlatformRealtimePublisher? realtimePublisher = null) : IIntegrationService
 {
     public async Task SeedCanonicalProvidersAsync(CancellationToken ct = default)
     {
@@ -653,6 +687,19 @@ public sealed class IntegrationService(
             Reason: outcome.FailureReason,
             AfterState: new { wh.Id, eventId, outcome.HttpStatusCode, outcome.AttemptsMade, outcome.BlockedBySsrf }), ct);
 
+        if (realtimePublisher is not null)
+        {
+            await realtimePublisher.PublishAsync(new PlatformRealtimeEvent(
+                delivery.Id.ToString("D"),
+                "webhook.delivery.completed",
+                now,
+                tenantId,
+                "platform.integrations.read",
+                wh.ApplicationCode ?? "NEXUS_C",
+                $"Webhook '{wh.EventType}' delivery {delivery.Status} (HTTP {outcome.HttpStatusCode?.ToString() ?? "N/A"}).",
+                new { wh.Id, delivery.Status, outcome.HttpStatusCode }), ct);
+        }
+
         return MapDelivery(delivery);
     }
 
@@ -738,6 +785,60 @@ public sealed class IntegrationService(
         return new AiModelDto(cfg.Id, cfg.ModelCode, cfg.ProviderName, cfg.TimeoutSeconds, cfg.MaxTokensLimit, cfg.IsEnabled);
     }
 
+    public async Task<Result<IReadOnlyList<AiCapabilityPolicyDto>>> ListAiPoliciesAsync(CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+
+        var list = await db.AiCapabilityPolicies.AsNoTracking()
+            .OrderBy(p => p.CapabilityCode)
+            .Select(p => MapAiPolicy(p))
+            .ToListAsync(ct);
+
+        return list;
+    }
+
+    public async Task<Result<AiCapabilityPolicyDto>> UpsertAiPolicyAsync(UpsertAiPolicyRequest request, CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+        var tenantId = tenantContext.TenantId!.Value;
+
+        var capCode = request.CapabilityCode.Trim().ToUpperInvariant();
+        var existing = await db.AiCapabilityPolicies.FirstOrDefaultAsync(p => p.CapabilityCode == capCode, ct);
+
+        if (existing is null)
+        {
+            var created = AiCapabilityPolicy.Create(
+                tenantId, capCode, request.IsEnabled, request.KillSwitchActive,
+                request.RequireHumanApproval, request.MonthlyTokenBudget,
+                request.AllowedTools, request.PromptTemplateVersion, request.DataClassification);
+            if (created.IsFailure) return Result.Failure<AiCapabilityPolicyDto>(created.Error);
+
+            db.AiCapabilityPolicies.Add(created.Value);
+            await db.SaveChangesAsync(ct);
+
+            await auditWriter.WriteAsync(new AuditEntryRequest(
+                "integration.ai.policy.create", "AiCapabilityPolicy", created.Value.Id.ToString("D"), tenantId, "Success",
+                AfterState: new { capCode, request.IsEnabled, request.KillSwitchActive, request.RequireHumanApproval, request.MonthlyTokenBudget }), ct);
+
+            return MapAiPolicy(created.Value);
+        }
+
+        var before = new { existing.IsEnabled, existing.KillSwitchActive, existing.RequireHumanApproval, existing.MonthlyTokenBudget };
+        var updated = existing.Update(
+            request.IsEnabled, request.KillSwitchActive, request.RequireHumanApproval,
+            request.MonthlyTokenBudget, request.AllowedTools, request.PromptTemplateVersion, request.DataClassification);
+        if (updated.IsFailure) return Result.Failure<AiCapabilityPolicyDto>(updated.Error);
+
+        await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "integration.ai.policy.update", "AiCapabilityPolicy", existing.Id.ToString("D"), tenantId, "Success",
+            BeforeState: before,
+            AfterState: new { existing.IsEnabled, existing.KillSwitchActive, existing.RequireHumanApproval, existing.MonthlyTokenBudget }), ct);
+
+        return MapAiPolicy(existing);
+    }
+
     public async Task<Result<AiCompletionResponse>> InvokeAiGatewayAsync(InvokeAiRequest request, CancellationToken ct = default)
     {
         if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
@@ -756,10 +857,53 @@ public sealed class IntegrationService(
         }
 
         var sanitizedMeta = SensitiveDataRedactor.SanitizeToJson(request.Metadata);
+        var now = clock.UtcNow;
+
+        // Enforce tenant AI Capability Governance Policy (kill-switch, monthly token budget, human approval gate)
+        var capCode = string.IsNullOrWhiteSpace(request.CapabilityCode) ? "DEFAULT" : request.CapabilityCode.Trim().ToUpperInvariant();
+        var policy = await db.AiCapabilityPolicies.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.CapabilityCode == capCode, ct)
+            ?? await db.AiCapabilityPolicies.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.CapabilityCode == "DEFAULT", ct);
+
+        if (policy is not null)
+        {
+            if (!policy.IsEnabled || policy.KillSwitchActive)
+            {
+                db.AiUsageLogs.Add(AiUsageLog.Record(tenantId, currentUser.UserId, model.ModelCode, aiProvider.ProviderName, 0, 0, "KillSwitchBlocked", sanitizedMeta, now));
+                await db.SaveChangesAsync(ct);
+                return Error.Forbidden("AI_KILL_SWITCH_ACTIVE", $"AI capability '{policy.CapabilityCode}' is disabled or kill-switched for this tenant.");
+            }
+
+            if ((policy.RequireHumanApproval || request.IsConsequentialAction) && string.IsNullOrWhiteSpace(request.HumanApprovalToken))
+            {
+                db.AiUsageLogs.Add(AiUsageLog.Record(tenantId, currentUser.UserId, model.ModelCode, aiProvider.ProviderName, 0, 0, "ApprovalRequired", sanitizedMeta, now));
+                await db.SaveChangesAsync(ct);
+                return Error.Forbidden("AI_HUMAN_APPROVAL_REQUIRED", $"AI capability '{policy.CapabilityCode}' requires explicit human approval token before execution.");
+            }
+
+            var monthStart = new DateTimeOffset(now.Year, now.Month, 1, 0, 0, 0, TimeSpan.Zero);
+            var monthlyUsed = await db.AiUsageLogs.AsNoTracking()
+                .Where(u => u.OccurredAt >= monthStart && u.Status == "Success")
+                .SumAsync(u => (long)u.PromptTokens + u.CompletionTokens, ct);
+
+            if (monthlyUsed + Math.Max(1, request.MaxTokens) > policy.MonthlyTokenBudget)
+            {
+                db.AiUsageLogs.Add(AiUsageLog.Record(tenantId, currentUser.UserId, model.ModelCode, aiProvider.ProviderName, 0, 0, "BudgetExceeded", sanitizedMeta, now));
+                await db.SaveChangesAsync(ct);
+                return Error.TooManyRequests("AI_BUDGET_EXCEEDED", $"Tenant monthly AI token budget ({policy.MonthlyTokenBudget}) exceeded for capability '{policy.CapabilityCode}'.");
+            }
+        }
+        else if (request.IsConsequentialAction && string.IsNullOrWhiteSpace(request.HumanApprovalToken))
+        {
+            db.AiUsageLogs.Add(AiUsageLog.Record(tenantId, currentUser.UserId, model.ModelCode, aiProvider.ProviderName, 0, 0, "ApprovalRequired", sanitizedMeta, now));
+            await db.SaveChangesAsync(ct);
+            return Error.Forbidden("AI_HUMAN_APPROVAL_REQUIRED", "Consequential AI actions require an explicit human approval token.");
+        }
 
         if (!aiProvider.IsConfigured)
         {
-            db.AiUsageLogs.Add(AiUsageLog.Record(tenantId, currentUser.UserId, model.ModelCode, aiProvider.ProviderName, 0, 0, "ProviderNotConfigured", sanitizedMeta, clock.UtcNow));
+            db.AiUsageLogs.Add(AiUsageLog.Record(tenantId, currentUser.UserId, model.ModelCode, aiProvider.ProviderName, 0, 0, "ProviderNotConfigured", sanitizedMeta, now));
             await db.SaveChangesAsync(ct);
             return Error.BusinessRule("AI_PROVIDER_NOT_CONFIGURED", "External AI provider credentials are not configured in this environment.");
         }
@@ -772,12 +916,16 @@ public sealed class IntegrationService(
 
         db.AiUsageLogs.Add(AiUsageLog.Record(
             tenantId, currentUser.UserId, model.ModelCode, response.ProviderName,
-            response.PromptTokens, response.CompletionTokens, "Success", sanitizedMeta, clock.UtcNow));
+            response.PromptTokens, response.CompletionTokens, "Success", sanitizedMeta, now));
         await db.SaveChangesAsync(ct);
 
         await entitlementChecker.RecordUsageAsync(tenantId, "AI_GATEWAY", response.PromptTokens + response.CompletionTokens, ct);
         return response;
     }
+
+    private static AiCapabilityPolicyDto MapAiPolicy(AiCapabilityPolicy p) => new(
+        p.Id, p.TenantId, p.CapabilityCode, p.IsEnabled, p.KillSwitchActive, p.RequireHumanApproval,
+        p.MonthlyTokenBudget, p.AllowedTools, p.PromptTemplateVersion, p.DataClassification, p.CreatedAt, p.UpdatedAt);
 
     private static ProviderDto MapProvider(ProviderDefinition p) => new(
         p.Id, p.Code, p.Name, p.Category, p.IsActive, p.DefaultMaxRetries, p.DefaultTimeoutSeconds,

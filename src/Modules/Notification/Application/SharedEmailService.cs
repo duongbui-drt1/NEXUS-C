@@ -81,7 +81,8 @@ public sealed class SharedEmailService(
     ICurrentUser currentUser,
     ICorrelationContext correlationContext,
     ISystemClock clock,
-    IAuditWriter auditWriter) : ISharedEmailService
+    IAuditWriter auditWriter,
+    IPlatformRealtimePublisher? realtimePublisher = null) : ISharedEmailService
 {
     public async Task<Result<EmailDeliveryDto>> SendTransactionalEmailAsync(SendTransactionalEmailRequest request, CancellationToken ct = default)
     {
@@ -166,6 +167,19 @@ public sealed class SharedEmailService(
             tenantContext.TenantId,
             dispatch.Succeeded ? "Success" : "Failed",
             AfterState: new { record.Provider, record.ProviderMessageId, record.RecipientMasked, Status = record.Status.ToString() }), ct);
+
+        if (realtimePublisher is not null)
+        {
+            await realtimePublisher.PublishAsync(new PlatformRealtimeEvent(
+                record.Id.ToString("D"),
+                "email.delivery.dispatched",
+                clock.UtcNow,
+                tenantContext.TenantId,
+                "platform.notifications.read",
+                "NEXUS_C",
+                $"Email to {record.RecipientMasked} ({record.Status}) via {record.Provider}.",
+                new { record.Id, Status = record.Status.ToString(), record.Provider }), ct);
+        }
 
         return Map(record);
     }

@@ -95,6 +95,76 @@ namespace Nexus.Modules.Integration.Infrastructure.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Nexus.Modules.Integration.Domain.AiCapabilityPolicy", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AllowedTools")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("CapabilityCode")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("DataClassification")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("Internal");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("KillSwitchActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<long>("MonthlyTokenBudget")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("PromptTemplateVersion")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("v1");
+
+                    b.Property<bool>("RequireHumanApproval")
+                        .HasColumnType("boolean");
+
+                    b.Property<uint>("RowVersion")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CapabilityCode")
+                        .IsUnique();
+
+                    b.ToTable("ai_capability_policies", "integration");
+                });
+
             modelBuilder.Entity("Nexus.Modules.Integration.Domain.AiModelConfiguration", b =>
                 {
                     b.Property<Guid>("Id")

@@ -109,6 +109,9 @@ public static class NexusBootstrapExtensions
         }
 
         services.AddSingleton<IBackgroundJobTracker, BackgroundJobTracker>();
+        services.AddSingleton<PlatformRealtimeHub>();
+        services.AddSingleton<IPlatformRealtimePublisher>(sp => sp.GetRequiredService<PlatformRealtimeHub>());
+        services.AddSingleton<IPlatformRealtimeSubscriber>(sp => sp.GetRequiredService<PlatformRealtimeHub>());
         services.AddScoped<IEventOutboxWriter, DatabaseOutboxWriter>();
         services.AddScoped<IPlatformOperationsService, PlatformOperationsService>();
         services.AddScoped<IApiRequestLogService, ApiRequestLogService>();

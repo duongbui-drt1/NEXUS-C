@@ -454,3 +454,78 @@ public sealed class AiUsageLog : TenantScopedEntity
         return log;
     }
 }
+
+public sealed class AiCapabilityPolicy : TenantScopedEntity
+{
+    private AiCapabilityPolicy() { }
+
+    public string CapabilityCode { get; private set; } = "DEFAULT";
+    public bool IsEnabled { get; private set; } = true;
+    public bool KillSwitchActive { get; private set; }
+    public bool RequireHumanApproval { get; private set; }
+    public long MonthlyTokenBudget { get; private set; } = 100_000;
+    public string? AllowedTools { get; private set; }
+    public string PromptTemplateVersion { get; private set; } = "v1";
+    public string DataClassification { get; private set; } = "Internal"; // Public, Internal, Confidential, Restricted
+
+    public static Result<AiCapabilityPolicy> Create(
+        Guid tenantId,
+        string capabilityCode,
+        bool isEnabled,
+        bool killSwitchActive,
+        bool requireHumanApproval,
+        long monthlyTokenBudget,
+        string? allowedTools = null,
+        string? promptTemplateVersion = null,
+        string? dataClassification = null)
+    {
+        if (string.IsNullOrWhiteSpace(capabilityCode) || capabilityCode.Trim().Length > 64)
+        {
+            return Error.Validation("AI_POLICY_INVALID_CAPABILITY", "CapabilityCode is required (max 64 chars).");
+        }
+
+        if (monthlyTokenBudget < 0)
+        {
+            return Error.Validation("AI_POLICY_INVALID_BUDGET", "MonthlyTokenBudget cannot be negative.");
+        }
+
+        var policy = new AiCapabilityPolicy
+        {
+            Id = Guid.CreateVersion7(),
+            CapabilityCode = capabilityCode.Trim().ToUpperInvariant(),
+            IsEnabled = isEnabled,
+            KillSwitchActive = killSwitchActive,
+            RequireHumanApproval = requireHumanApproval,
+            MonthlyTokenBudget = monthlyTokenBudget,
+            AllowedTools = string.IsNullOrWhiteSpace(allowedTools) ? null : allowedTools.Trim(),
+            PromptTemplateVersion = string.IsNullOrWhiteSpace(promptTemplateVersion) ? "v1" : promptTemplateVersion.Trim(),
+            DataClassification = string.IsNullOrWhiteSpace(dataClassification) ? "Internal" : dataClassification.Trim()
+        };
+        policy.AssignTenant(tenantId);
+        return policy;
+    }
+
+    public Result Update(
+        bool isEnabled,
+        bool killSwitchActive,
+        bool requireHumanApproval,
+        long monthlyTokenBudget,
+        string? allowedTools,
+        string? promptTemplateVersion,
+        string? dataClassification)
+    {
+        if (monthlyTokenBudget < 0)
+        {
+            return Result.Failure(Error.Validation("AI_POLICY_INVALID_BUDGET", "MonthlyTokenBudget cannot be negative."));
+        }
+
+        IsEnabled = isEnabled;
+        KillSwitchActive = killSwitchActive;
+        RequireHumanApproval = requireHumanApproval;
+        MonthlyTokenBudget = monthlyTokenBudget;
+        AllowedTools = string.IsNullOrWhiteSpace(allowedTools) ? null : allowedTools.Trim();
+        PromptTemplateVersion = string.IsNullOrWhiteSpace(promptTemplateVersion) ? "v1" : promptTemplateVersion.Trim();
+        DataClassification = string.IsNullOrWhiteSpace(dataClassification) ? "Internal" : dataClassification.Trim();
+        return Result.Success();
+    }
+}

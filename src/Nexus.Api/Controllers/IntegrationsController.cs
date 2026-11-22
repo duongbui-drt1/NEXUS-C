@@ -129,6 +129,16 @@ public sealed class IntegrationsController(IIntegrationService integrationServic
     public async Task<IActionResult> RegisterAiModel([FromBody] RegisterAiModelRequest request, CancellationToken ct)
         => (await integrationService.RegisterAiModelAsync(request, ct)).ToActionResult(HttpContext, StatusCodes.Status201Created);
 
+    [HttpGet("ai/policies")]
+    [RequirePermission(Permissions.IntegrationsRead)]
+    public async Task<IActionResult> ListAiPolicies(CancellationToken ct)
+        => (await integrationService.ListAiPoliciesAsync(ct)).ToActionResult(HttpContext);
+
+    [HttpPut("ai/policies")]
+    [RequirePermission(Permissions.IntegrationsManage)]
+    public async Task<IActionResult> UpsertAiPolicy([FromBody] UpsertAiPolicyRequest request, CancellationToken ct)
+        => (await integrationService.UpsertAiPolicyAsync(request, ct)).ToActionResult(HttpContext);
+
     [HttpPost("ai/invoke")]
     [RequirePermission(Permissions.AiGatewayInvoke)]
     public async Task<IActionResult> InvokeAi([FromBody] InvokeAiRequest request, CancellationToken ct)

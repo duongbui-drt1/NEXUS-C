@@ -38,6 +38,9 @@ public sealed record Error(
     public static Error BusinessRule(string code, string message)
         => new(code, message, ErrorType.UnprocessableEntity);
 
+    public static Error TooManyRequests(string code, string message)
+        => new(code, message, ErrorType.TooManyRequests);
+
     public static Error Failure(string code, string message)
         => new(code, message, ErrorType.Failure);
 }

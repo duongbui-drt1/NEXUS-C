@@ -22,6 +22,7 @@ public sealed class IntegrationDbContext(
     public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
     public DbSet<AiModelConfiguration> AiModels => Set<AiModelConfiguration>();
     public DbSet<AiUsageLog> AiUsageLogs => Set<AiUsageLog>();
+    public DbSet<AiCapabilityPolicy> AiCapabilityPolicies => Set<AiCapabilityPolicy>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -118,6 +119,17 @@ public sealed class IntegrationDbContext(
             e.Property(x => x.Status).HasMaxLength(64).IsRequired();
             e.Property(x => x.SanitizedRequestMetaJson).HasColumnType("jsonb");
             e.HasIndex(x => new { x.TenantId, x.OccurredAt });
+        });
+
+        modelBuilder.Entity<AiCapabilityPolicy>(e =>
+        {
+            e.ToTable("ai_capability_policies", SchemaName);
+            e.HasKey(x => x.Id);
+            e.Property(x => x.CapabilityCode).HasMaxLength(64).IsRequired();
+            e.Property(x => x.AllowedTools).HasMaxLength(500);
+            e.Property(x => x.PromptTemplateVersion).HasMaxLength(32).HasDefaultValue("v1").IsRequired();
+            e.Property(x => x.DataClassification).HasMaxLength(32).HasDefaultValue("Internal").IsRequired();
+            e.HasIndex(x => new { x.TenantId, x.CapabilityCode }).IsUnique();
         });
 
         base.OnModelCreating(modelBuilder);
