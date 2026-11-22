@@ -39,3 +39,12 @@ All production secrets MUST be supplied via environment variables or a managed s
 | `NEXUS_BOOTSTRAP_ADMIN_PASSWORD` | Initial only | `""` | Complex password for initial Platform SuperAdmin (never pass to `Nexus.Api`) |
 | `POSTGRES_DB` / `POSTGRES_USER` | `init-roles.sh` | — | Target PostgreSQL database and superuser executing `infrastructure/database/init-roles.sh` |
 | `POSTGRES_MIGRATOR_PASSWORD` / `POSTGRES_APP_PASSWORD` | `init-roles.sh` | — | Passwords for created/updated `NEXUS_MIGRATOR_ROLE` (`nexus_migrator`) and `NEXUS_APP_ROLE` (`nexus_app`) |
+| `Email__Provider` | Optional | `Resend` | Email provider (`Resend` when API key configured; falls back to `LoggingEmailSender` in dev/test) |
+| `Email__DefaultFromAddress` | Optional | `no-reply@duli.studio` | Verified sender address |
+| `Email__Resend__ApiKey` / `RESEND_API_KEY` | Secret | — | Resend transactional API key (keep strictly in `.env` or secret manager) |
+| `Email__Resend__WebhookSecret` | Secret | — | Svix signing secret for `POST /api/v1/webhooks/resend` |
+| `Clerk__Enabled` | Optional | `false` | Enables Clerk OIDC JWKS JWT validation in `NexusDualAuth` alongside local NEXUS JWT |
+| `Clerk__AppId` | Optional | `app_3MTU0OPO0cFJboGQYPkeOLjZohj` | Linked Clerk application ID |
+| `Clerk__Authority` | Required if Clerk Enabled | — | Clerk OIDC issuer / authority URL |
+| `Clerk__SecretKey` / `CLERK_SECRET_KEY` | Secret | — | Clerk Backend API secret key for reconciliation |
+| `Clerk__WebhookSigningSecret` | Secret | — | Svix signing secret for `POST /api/v1/webhooks/clerk` |

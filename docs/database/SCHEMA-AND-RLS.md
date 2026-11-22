@@ -70,3 +70,9 @@ See [ADR-003: Hybrid RLS & Policy Engine](../architecture/ADR-003-HYBRID-RLS-AND
    - `nexus_app` holds `GRANT SELECT, INSERT` ONLY on `audit.audit_events`.
    - `FORCE ROW LEVEL SECURITY` defines ONLY `FOR SELECT` and `FOR INSERT` policies (default-deny `UPDATE`/`DELETE` even for table owner `nexus_migrator`).
    - Trigger `audit.trg_audit_events_immutable` (`BEFORE UPDATE OR DELETE`) raises an exception even for PostgreSQL superusers.
+6. **`notification.email_deliveries` (`nexus_email_deliveries_isolation`)**
+   - Platform scope reads/writes all email delivery records; tenant scope reads/writes only rows matching `app.current_tenant_id`.
+7. **`messaging.api_request_logs` (`nexus_api_request_logs_isolation`)**
+   - Platform scope reads all operational API telemetry; tenant scope reads only rows matching `app.current_tenant_id`.
+
+Plus `integration.ai_capability_policies` added to strict tenant-scoped `FORCE ROW LEVEL SECURITY` (`nexus_tenant_isolation`), bringing the total to **36 `FORCE ROW LEVEL SECURITY` tables** across the 12 PostgreSQL schemas.

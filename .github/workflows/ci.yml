@@ -2,9 +2,9 @@ name: NEXUS Foundation CI
 
 on:
   push:
-    branches: [ main, develop, 'fix/**', 'release/**' ]
+    branches: [ main, develop, 'feat/**', 'fix/**', 'release/**' ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, 'release/**' ]
 
 jobs:
   backend-ci:

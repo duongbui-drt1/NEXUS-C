@@ -97,3 +97,35 @@ Canonical envelope published via Transactional Outbox to RabbitMQ topic exchange
 - **Identity & Service Clients:** `platform.user.created.v1`, `platform.user.invited.v1`, `platform.user.disabled.v1`, `platform.service_client.created.v1`, `platform.service_client.revoked.v1`
 - **Subscriptions & Applications:** `platform.subscription.activated.v1`, `platform.subscription.cancelled.v1`, `platform.subscription.expired.v1`, `platform.application.activated.v1`, `platform.application.deactivated.v1`
 - **Workflows:** `platform.workflow.submitted.v1`, `platform.workflow.approved.v1`, `platform.workflow.rejected.v1`, `platform.workflow.cancelled.v1`, `platform.workflow.delegated.v1`, `platform.workflow.escalated.v1`
+
+---
+
+## War-Room Final Platform Pillar Endpoints
+
+- **User Detail, Safe Profile & Clerk Sync:**
+  - `GET /api/v1/platform/users/{userId}` — Safe user detail, Clerk subject, sessions, and tenant memberships.
+  - `PUT /api/v1/platform/users/{userId}/profile` — Safe profile update (rejects privilege fields with `422 PROFILE_PRIVILEGE_FIELDS_FORBIDDEN`).
+  - `GET /api/v1/platform/users/clerk/sync-status` — Clerk sync status (`app_3MTU0OPO0cFJboGQYPkeOLjZohj`).
+  - `POST /api/v1/platform/users/clerk/link` — Explicitly link internal `UserId` to a Clerk subject.
+  - `POST /api/v1/platform/users/clerk/reconcile` — Reconcile users from Clerk Backend API.
+  - `POST /api/v1/webhooks/clerk` — Svix-verified Clerk webhook inbox.
+- **Shared Transactional Email (Resend):**
+  - `GET /api/v1/platform/email/status` — Provider configuration & delivery counters.
+  - `GET /api/v1/platform/email/deliveries` — Paginated delivery ledger (`FORCE RLS`).
+  - `POST /api/v1/platform/email/send` — Idempotent transactional email send (`ResendEmailSender`).
+  - `GET /api/v1/platform/email/suppressions` — Active bounce/complaint suppressions.
+  - `POST /api/v1/webhooks/resend` — Svix-verified Resend delivery/bounce/complaint webhook.
+- **Distributed Rate Limiting & Operational API Logs:**
+  - `GET/POST /api/v1/platform/rate-limits` & `PUT/DELETE /api/v1/platform/rate-limits/{id}` — Policy CRUD.
+  - `GET /api/v1/platform/api-logs` & `POST /api/v1/platform/api-logs/purge` — Bounded sanitized operational API telemetry (`FORCE RLS`).
+- **Integration Connections, Outbound Webhooks & AI Governance:**
+  - `POST /api/v1/platform/integrations/connections/{id}/{test|disable|reconnect|rotate-credential-ref}` & `DELETE /api/v1/platform/integrations/connections/{id}`.
+  - `POST /api/v1/platform/integrations/webhooks/{id}/dispatch` — SSRF/DNS-rebinding hardened signed webhook dispatcher.
+  - `GET/PUT /api/v1/platform/integrations/ai/policies` — Tenant-scoped AI governance policies (`FORCE RLS`: kill-switch, monthly token budget, human approval gate).
+- **Reference Data, Currencies, Indicative FX & Plan Archival:**
+  - `GET /api/v1/platform/reference-data/categories` & `GET /api/v1/platform/reference-data/{category}?search=...`
+  - `GET /api/v1/platform/currencies?search=...`
+  - `GET /api/v1/platform/fx/rates`, `POST /api/v1/platform/fx/refresh`, `POST /api/v1/platform/fx/observations`, `GET /api/v1/platform/fx/convert`
+  - `DELETE /api/v1/platform/subscriptions/plans/{planId}` — Safe delete (`0` references -> `HardDeleted`; `>= 1` reference -> `Archived`).
+- **Real-Time Operational SSE Stream:**
+  - `GET /api/v1/platform/realtime/stream` — Authenticated, tenant-isolated, permission-filtered `text/event-stream` with `Last-Event-ID` replay.

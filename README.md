@@ -141,12 +141,12 @@ Open **http://127.0.0.1:5173** for NEXUS C Console, **http://127.0.0.1:5000/open
 Backend, frontend, and Docker build gates run automatically in [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 
 ```bash
-# Backend (69 tests: Unit, Architecture, PostgreSQL 17 RLS/Integration, Security, API)
+# Backend (82 tests: Unit, Architecture, PostgreSQL 17 RLS/Integration, Security, API)
 dotnet format NEXUS.sln --verify-no-changes
 dotnet build NEXUS.sln -c Release
 dotnet test NEXUS.sln -c Release --no-build
 
-# Frontend (TypeScript strict, ESLint, 13 Vitest + Testing Library tests, Production bundle)
+# Frontend (TypeScript strict, ESLint, 14 Vitest + Testing Library tests, Production bundle)
 cd nexus-c-console
 npm run typecheck
 npm run lint
@@ -159,6 +159,7 @@ npm run build
 ## Documentation Index
 
 ### NEXUS C 1.0 Release & Platform Freeze
+- [NEXUS C 1.0 War-Room Final Freeze Report](docs/release/NEXUS-C-1.0-WAR-ROOM-FREEZE-REPORT.md)
 - [NEXUS C 1.0 Release Notes](docs/release/NEXUS-C-1.0-RELEASE-NOTES.md)
 - [NEXUS C 1.0 Platform Freeze Specification](docs/release/NEXUS-C-1.0-PLATFORM-FREEZE.md)
 - [NEXUS C 1.0 Baseline Audit](docs/release/NEXUS-C-1.0-BASELINE-AUDIT.md)
@@ -177,16 +178,18 @@ npm run build
 - [ADR-004: Service-to-Service OAuth 2.0 & API Keys](docs/architecture/ADR-004-SERVICE-TO-SERVICE-OAUTH2-AND-API-KEYS.md)
 - [ADR-005: Workflow Versioning & Governance](docs/architecture/ADR-005-WORKFLOW-VERSIONING-AND-GOVERNANCE.md)
 - [ADR-006: Application Registry & Authoritative Entitlements](docs/architecture/ADR-006-APPLICATION-REGISTRY-AND-ENTITLEMENTS.md)
+- [ADR-007: War-Room Final Platform Pillars (Clerk, Resend, Rate Limits, FX, SSE, AI Governance)](docs/architecture/ADR-007-WAR-ROOM-CLERK-RESEND-RATELIMIT-FX-SSE-AI.md)
 - [NEXUS C Console Architecture](nexus-c-console/docs/architecture.md)
 
 ### API, Database & Security
 - [API Reference](docs/api/API-REFERENCE.md)
 - [Frontend API Integration & Gap Matrix](nexus-c-console/docs/api-integration.md)
-- [Database Schema & 33-Table PostgreSQL RLS](docs/database/SCHEMA-AND-RLS.md)
+- [Database Schema & 36-Table PostgreSQL RLS](docs/database/SCHEMA-AND-RLS.md)
 - [Security Architecture](docs/security/SECURITY-ARCHITECTURE.md)
 
 ### Deployment & Operations
 - [Production Deployment Guide](docs/deployment/PRODUCTION-DEPLOYMENT.md)
+- [Operational Runbook: Clerk, Resend, Rate Limiting, FX & AI Governance](docs/operations/RUNBOOK-CLERK-RESEND-FX-RATELIMIT.md)
 - [Database Operations Runbook](docs/deployment/DATABASE-OPERATIONS.md)
 - [Local Setup Guide](docs/deployment/LOCAL-SETUP.md)
 - [Docker Guide](docs/deployment/DOCKER.md)
