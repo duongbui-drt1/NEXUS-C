@@ -19,6 +19,9 @@ public sealed class ConfigurationDbContext(
     public DbSet<FeatureFlag> FeatureFlags => Set<FeatureFlag>();
     public DbSet<SettingHistory> SettingHistories => Set<SettingHistory>();
     public DbSet<RateLimitPolicyRecord> RateLimitPolicies => Set<RateLimitPolicyRecord>();
+    public DbSet<ReferenceDataItem> ReferenceDataItems => Set<ReferenceDataItem>();
+    public DbSet<CurrencyDefinition> Currencies => Set<CurrencyDefinition>();
+    public DbSet<ExchangeRateObservation> ExchangeRates => Set<ExchangeRateObservation>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -75,6 +78,41 @@ public sealed class ConfigurationDbContext(
             e.Property(x => x.Description).HasMaxLength(400);
             e.HasIndex(x => x.Name).IsUnique();
             e.HasIndex(x => new { x.IsEnabled, x.Priority });
+        });
+
+        modelBuilder.Entity<ReferenceDataItem>(e =>
+        {
+            e.ToTable("reference_data", SchemaName);
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Category).HasMaxLength(64).IsRequired();
+            e.Property(x => x.Code).HasMaxLength(64).IsRequired();
+            e.Property(x => x.Label).HasMaxLength(200).IsRequired();
+            e.Property(x => x.LocalizedLabelsJson).HasColumnType("jsonb");
+            e.Property(x => x.MetadataJson).HasColumnType("jsonb");
+            e.HasIndex(x => new { x.Category, x.Code }).IsUnique();
+            e.HasIndex(x => new { x.Category, x.IsActive, x.SortOrder });
+        });
+
+        modelBuilder.Entity<CurrencyDefinition>(e =>
+        {
+            e.ToTable("currencies", SchemaName);
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Code).HasMaxLength(3).IsRequired();
+            e.Property(x => x.Name).HasMaxLength(120).IsRequired();
+            e.Property(x => x.Symbol).HasMaxLength(16).IsRequired();
+            e.HasIndex(x => x.Code).IsUnique();
+        });
+
+        modelBuilder.Entity<ExchangeRateObservation>(e =>
+        {
+            e.ToTable("fx_rates", SchemaName);
+            e.HasKey(x => x.Id);
+            e.Property(x => x.BaseCurrency).HasMaxLength(3).IsRequired();
+            e.Property(x => x.QuoteCurrency).HasMaxLength(3).IsRequired();
+            e.Property(x => x.Rate).HasPrecision(18, 8).IsRequired();
+            e.Property(x => x.Provider).HasMaxLength(64).IsRequired();
+            e.Property(x => x.SourceReference).HasMaxLength(300);
+            e.HasIndex(x => new { x.BaseCurrency, x.QuoteCurrency, x.FetchedAt });
         });
 
         base.OnModelCreating(modelBuilder);

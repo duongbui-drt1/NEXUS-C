@@ -18,6 +18,15 @@ public static class ConfigurationModuleExtensions
         services.AddScoped<RateLimitPolicyService>();
         services.AddScoped<IRateLimitPolicyService>(sp => sp.GetRequiredService<RateLimitPolicyService>());
         services.AddScoped<IRateLimitPolicyProvider>(sp => sp.GetRequiredService<RateLimitPolicyService>());
+        services.AddHttpClient(FrankfurterFxRateProvider.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(10);
+        }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+        {
+            AllowAutoRedirect = false
+        });
+        services.AddSingleton<IFxRateProvider, FrankfurterFxRateProvider>();
+        services.AddScoped<IReferenceDataService, ReferenceDataService>();
         return services;
     }
 }

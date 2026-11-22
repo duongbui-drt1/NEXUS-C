@@ -71,7 +71,25 @@ public sealed record TenantApplicationDto(
 
 public sealed record PlanFeatureInput(string FeatureCode, bool IsEnabled = true, long? QuotaLimit = null);
 public sealed record CreatePlanRequest(string Code, string Name, string Description, decimal MonthlyPrice, string Currency, IReadOnlyList<PlanFeatureInput> Features);
-public sealed record PlanDto(Guid Id, string Code, string Name, string Description, decimal MonthlyPrice, string Currency, bool IsActive, IReadOnlyList<PlanFeatureInput> Features, int Version = 1);
+public sealed record PlanDto(
+    Guid Id,
+    string Code,
+    string Name,
+    string Description,
+    decimal MonthlyPrice,
+    string Currency,
+    bool IsActive,
+    IReadOnlyList<PlanFeatureInput> Features,
+    int Version = 1,
+    DateTimeOffset? ArchivedAt = null,
+    string? ArchiveReason = null);
+public sealed record PlanDeletionResultDto(
+    Guid PlanId,
+    string PlanCode,
+    string Outcome, // "HardDeleted" or "Archived"
+    int ReferencedSubscriptionCount,
+    DateTimeOffset? ArchivedAt,
+    string Message);
 public sealed record AssignSubscriptionRequest(Guid TenantId, Guid PlanId, DateTimeOffset StartsAt, DateTimeOffset EndsAt, int SeatCount = 10);
 public sealed record EntitlementDto(string FeatureCode, bool IsEnabled, long? QuotaLimit, DateTimeOffset ExpiresAt);
 public sealed record TenantSubscriptionDto(Guid Id, Guid TenantId, Guid PlanId, string Status, DateTimeOffset StartsAt, DateTimeOffset EndsAt, IReadOnlyList<EntitlementDto> Entitlements);
@@ -101,6 +119,7 @@ public interface ISubscriptionService
 
     Task<Result<PlanDto>> CreatePlanAsync(CreatePlanRequest request, CancellationToken ct = default);
     Task<Result<IReadOnlyList<PlanDto>>> ListPlansAsync(CancellationToken ct = default);
+    Task<Result<PlanDeletionResultDto>> DeleteOrArchivePlanAsync(Guid planId, string? reason = null, CancellationToken ct = default);
     Task<Result<TenantSubscriptionDto>> AssignPlanToTenantAsync(AssignSubscriptionRequest request, CancellationToken ct = default);
     Task<Result<TenantSubscriptionDto>> UpdateSubscriptionStatusAsync(Guid tenantId, SubscriptionStatus newStatus, string? reason = null, CancellationToken ct = default);
     Task<Result<TenantSubscriptionDto>> GetCurrentTenantSubscriptionAsync(CancellationToken ct = default);
@@ -393,7 +412,74 @@ public sealed class SubscriptionService(
         var plans = await db.Plans.AsNoTracking().Include(p => p.Features).OrderBy(p => p.MonthlyPrice).ToListAsync(ct);
         return plans.Select(p => new PlanDto(
             p.Id, p.Code, p.Name, p.Description, p.MonthlyPrice, p.Currency, p.IsActive,
-            p.Features.Select(f => new PlanFeatureInput(f.FeatureCode, f.IsEnabled, f.QuotaLimit)).ToList(), p.Version)).ToList();
+            p.Features.Select(f => new PlanFeatureInput(f.FeatureCode, f.IsEnabled, f.QuotaLimit)).ToList(),
+            p.Version, p.ArchivedAt, p.ArchiveReason)).ToList();
+    }
+
+    public async Task<Result<PlanDeletionResultDto>> DeleteOrArchivePlanAsync(Guid planId, string? reason = null, CancellationToken ct = default)
+    {
+        if (!tenantContext.IsPlatformBypass && !currentUser.IsPlatformUser)
+        {
+            return Error.Forbidden("PLAN_DELETE_PLATFORM_ONLY", "Only platform administrators may delete or archive subscription plans.");
+        }
+
+        var plan = await db.Plans.Include(p => p.Features).FirstOrDefaultAsync(p => p.Id == planId, ct);
+        if (plan is null)
+        {
+            return Error.NotFound("PLAN_NOT_FOUND", "Subscription plan was not found.");
+        }
+
+        // Cross-tenant reference check under explicit platform bypass so historical/active tenant subscriptions are NEVER orphaned!
+        int referencedCount;
+        using (tenantContext.BeginScope(null, platformBypass: true, bypassReason: "subscription-plan-delete-reference-check"))
+        {
+            referencedCount = await db.Subscriptions.AsNoTracking().CountAsync(s => s.PlanId == planId, ct);
+        }
+
+        if (referencedCount > 0)
+        {
+            var now = clock.UtcNow;
+            plan.Archive(now, reason);
+            await db.SaveChangesAsync(ct);
+
+            await auditWriter.WriteAsync(new AuditEntryRequest(
+                "subscription.plan.archive",
+                "Plan",
+                plan.Id.ToString("D"),
+                null,
+                "Success",
+                Reason: plan.ArchiveReason,
+                AfterState: new { plan.Code, plan.IsActive, plan.ArchivedAt, ReferencedSubscriptionCount = referencedCount }), ct);
+
+            return new PlanDeletionResultDto(
+                plan.Id,
+                plan.Code,
+                "Archived",
+                referencedCount,
+                plan.ArchivedAt,
+                $"Plan '{plan.Code}' is referenced by {referencedCount} tenant subscription record(s) and was safely archived instead of hard-deleted.");
+        }
+
+        var planCode = plan.Code;
+        db.Plans.Remove(plan);
+        await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "subscription.plan.delete",
+            "Plan",
+            planId.ToString("D"),
+            null,
+            "Success",
+            Reason: reason,
+            BeforeState: new { Code = planCode, plan.Name, plan.MonthlyPrice, plan.Currency }), ct);
+
+        return new PlanDeletionResultDto(
+            planId,
+            planCode,
+            "HardDeleted",
+            0,
+            null,
+            $"Unused plan '{planCode}' had 0 subscription references and was permanently deleted.");
     }
 
     public async Task<Result<TenantSubscriptionDto>> AssignPlanToTenantAsync(AssignSubscriptionRequest request, CancellationToken ct = default)
@@ -406,6 +492,10 @@ public sealed class SubscriptionService(
 
         var plan = await db.Plans.AsNoTracking().Include(p => p.Features).FirstOrDefaultAsync(p => p.Id == request.PlanId, ct);
         if (plan is null) return Error.NotFound("PLAN_NOT_FOUND", "Subscription plan was not found.");
+        if (!plan.IsActive || plan.ArchivedAt.HasValue)
+        {
+            return Error.BusinessRule("PLAN_ARCHIVED", $"Plan '{plan.Code}' is archived or inactive and cannot be assigned to new subscriptions.");
+        }
 
         using var scope = tenantContext.BeginScope(request.TenantId);
         var now = clock.UtcNow;

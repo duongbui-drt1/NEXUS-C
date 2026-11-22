@@ -213,6 +213,8 @@ public sealed class Plan : AuditableEntity
     public string Currency { get; private set; } = "USD";
     public int Version { get; private set; } = 1;
     public bool IsActive { get; private set; } = true;
+    public DateTimeOffset? ArchivedAt { get; private set; }
+    public string? ArchiveReason { get; private set; }
 
     public ICollection<PlanFeature> Features { get; private set; } = [];
 
@@ -244,6 +246,13 @@ public sealed class Plan : AuditableEntity
             Version = 1,
             IsActive = true
         };
+    }
+
+    public void Archive(DateTimeOffset utcNow, string? reason = null)
+    {
+        IsActive = false;
+        ArchivedAt = utcNow;
+        ArchiveReason = string.IsNullOrWhiteSpace(reason) ? "Archived due to existing tenant subscription references." : reason.Trim();
     }
 }
 

@@ -64,6 +64,7 @@ public sealed class SubscriptionDbContext(
             e.Property(x => x.MonthlyPrice).HasPrecision(18, 2);
             e.Property(x => x.Currency).HasMaxLength(3).IsRequired();
             e.Property(x => x.Version).HasDefaultValue(1).IsRequired();
+            e.Property(x => x.ArchiveReason).HasMaxLength(500);
             e.HasIndex(x => x.Code).IsUnique();
         });
 

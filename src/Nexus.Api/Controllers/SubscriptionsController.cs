@@ -23,6 +23,11 @@ public sealed class SubscriptionsController(ISubscriptionService subscriptionSer
     public async Task<IActionResult> ListPlans(CancellationToken ct)
         => (await subscriptionService.ListPlansAsync(ct)).ToActionResult(HttpContext);
 
+    [HttpDelete("plans/{planId:guid}")]
+    [RequirePermission(Permissions.SubscriptionsDelete)]
+    public async Task<IActionResult> DeleteOrArchivePlan(Guid planId, [FromQuery] string? reason = null, CancellationToken ct = default)
+        => (await subscriptionService.DeleteOrArchivePlanAsync(planId, reason, ct)).ToActionResult(HttpContext);
+
     [HttpPost("assign")]
     [RequirePermission(Permissions.SubscriptionsManage)]
     public async Task<IActionResult> AssignPlan([FromBody] AssignSubscriptionRequest request, CancellationToken ct)

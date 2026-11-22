@@ -261,3 +261,150 @@ public sealed class RateLimitPolicyRecord : AuditableEntity
         return Result.Success();
     }
 }
+
+public sealed class ReferenceDataItem : AuditableEntity
+{
+    private ReferenceDataItem() { }
+
+    public string Category { get; private set; } = string.Empty; // country, timezone, locale, language, status
+    public string Code { get; private set; } = string.Empty;
+    public string Label { get; private set; } = string.Empty;
+    public string? LocalizedLabelsJson { get; private set; }
+    public string? MetadataJson { get; private set; }
+    public bool IsActive { get; private set; } = true;
+    public int SortOrder { get; private set; }
+
+    public static Result<ReferenceDataItem> Create(
+        string category,
+        string code,
+        string label,
+        int sortOrder = 0,
+        bool isActive = true,
+        string? localizedLabelsJson = null,
+        string? metadataJson = null)
+    {
+        if (string.IsNullOrWhiteSpace(category) || category.Trim().Length > 64)
+        {
+            return Error.Validation("REFDATA_INVALID_CATEGORY", "Category is required (max 64 chars).");
+        }
+
+        if (string.IsNullOrWhiteSpace(code) || code.Trim().Length > 64)
+        {
+            return Error.Validation("REFDATA_INVALID_CODE", "Code is required (max 64 chars).");
+        }
+
+        if (string.IsNullOrWhiteSpace(label) || label.Trim().Length > 200)
+        {
+            return Error.Validation("REFDATA_INVALID_LABEL", "Label is required (max 200 chars).");
+        }
+
+        return new ReferenceDataItem
+        {
+            Id = Guid.CreateVersion7(),
+            Category = category.Trim().ToLowerInvariant(),
+            Code = code.Trim(),
+            Label = label.Trim(),
+            SortOrder = sortOrder,
+            IsActive = isActive,
+            LocalizedLabelsJson = string.IsNullOrWhiteSpace(localizedLabelsJson) ? null : localizedLabelsJson.Trim(),
+            MetadataJson = string.IsNullOrWhiteSpace(metadataJson) ? null : metadataJson.Trim()
+        };
+    }
+
+    public void Update(string label, bool isActive, int sortOrder, string? localizedLabelsJson = null, string? metadataJson = null)
+    {
+        if (!string.IsNullOrWhiteSpace(label)) Label = label.Trim();
+        IsActive = isActive;
+        SortOrder = sortOrder;
+        if (localizedLabelsJson is not null) LocalizedLabelsJson = string.IsNullOrWhiteSpace(localizedLabelsJson) ? null : localizedLabelsJson.Trim();
+        if (metadataJson is not null) MetadataJson = string.IsNullOrWhiteSpace(metadataJson) ? null : metadataJson.Trim();
+    }
+}
+
+public sealed class CurrencyDefinition : AuditableEntity
+{
+    private CurrencyDefinition() { }
+
+    public string Code { get; private set; } = string.Empty; // ISO 4217 3-letter uppercase
+    public string Name { get; private set; } = string.Empty;
+    public string Symbol { get; private set; } = string.Empty;
+    public int MinorUnitPrecision { get; private set; } = 2;
+    public bool IsActive { get; private set; } = true;
+
+    public static Result<CurrencyDefinition> Create(string code, string name, string symbol, int minorUnitPrecision = 2, bool isActive = true)
+    {
+        if (string.IsNullOrWhiteSpace(code) || code.Trim().Length != 3)
+        {
+            return Error.Validation("CURRENCY_INVALID_CODE", "Currency code must be a 3-letter ISO 4217 code.");
+        }
+
+        if (string.IsNullOrWhiteSpace(name) || name.Trim().Length > 120)
+        {
+            return Error.Validation("CURRENCY_INVALID_NAME", "Currency name is required (max 120 chars).");
+        }
+
+        if (minorUnitPrecision < 0 || minorUnitPrecision > 6)
+        {
+            return Error.Validation("CURRENCY_INVALID_PRECISION", "MinorUnitPrecision must be between 0 and 6.");
+        }
+
+        return new CurrencyDefinition
+        {
+            Id = Guid.CreateVersion7(),
+            Code = code.Trim().ToUpperInvariant(),
+            Name = name.Trim(),
+            Symbol = string.IsNullOrWhiteSpace(symbol) ? code.Trim().ToUpperInvariant() : symbol.Trim(),
+            MinorUnitPrecision = minorUnitPrecision,
+            IsActive = isActive
+        };
+    }
+}
+
+public sealed class ExchangeRateObservation : Entity
+{
+    private ExchangeRateObservation() { }
+
+    public string BaseCurrency { get; private set; } = "USD";
+    public string QuoteCurrency { get; private set; } = string.Empty;
+    public decimal Rate { get; private set; }
+    public string Provider { get; private set; } = string.Empty;
+    public DateTimeOffset ObservedAt { get; private set; }
+    public DateTimeOffset FetchedAt { get; private set; }
+    public DateTimeOffset StaleAfter { get; private set; }
+    public string? SourceReference { get; private set; }
+
+    public static Result<ExchangeRateObservation> Create(
+        string baseCurrency,
+        string quoteCurrency,
+        decimal rate,
+        string provider,
+        DateTimeOffset observedAt,
+        DateTimeOffset fetchedAt,
+        DateTimeOffset staleAfter,
+        string? sourceReference = null)
+    {
+        if (string.IsNullOrWhiteSpace(baseCurrency) || baseCurrency.Trim().Length != 3 ||
+            string.IsNullOrWhiteSpace(quoteCurrency) || quoteCurrency.Trim().Length != 3)
+        {
+            return Error.Validation("FX_INVALID_CURRENCY", "BaseCurrency and QuoteCurrency must be 3-letter ISO 4217 codes.");
+        }
+
+        if (rate <= 0m)
+        {
+            return Error.Validation("FX_INVALID_RATE", "Exchange rate must be strictly greater than zero.");
+        }
+
+        return new ExchangeRateObservation
+        {
+            Id = Guid.CreateVersion7(),
+            BaseCurrency = baseCurrency.Trim().ToUpperInvariant(),
+            QuoteCurrency = quoteCurrency.Trim().ToUpperInvariant(),
+            Rate = decimal.Round(rate, 8, MidpointRounding.AwayFromZero),
+            Provider = string.IsNullOrWhiteSpace(provider) ? "Manual" : provider.Trim(),
+            ObservedAt = observedAt,
+            FetchedAt = fetchedAt,
+            StaleAfter = staleAfter,
+            SourceReference = string.IsNullOrWhiteSpace(sourceReference) ? null : sourceReference.Trim()
+        };
+    }
+}

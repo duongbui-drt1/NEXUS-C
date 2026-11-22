@@ -92,6 +92,9 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
             var integrationService = scope.ServiceProvider.GetRequiredService<IIntegrationService>();
             await integrationService.SeedCanonicalProvidersAsync(ct);
 
+            var referenceDataService = scope.ServiceProvider.GetRequiredService<IReferenceDataService>();
+            await referenceDataService.SeedReferenceDataAndCurrenciesAsync(ct);
+
             logger.LogInformation("NEXUS C Foundation migrations, RLS hardening, RBAC, Application Registry & Rate Limit seeding completed successfully.");
         }
         finally
