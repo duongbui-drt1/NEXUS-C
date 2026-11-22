@@ -38,8 +38,6 @@ public sealed class AccessControlDbContext(
             e.Property(x => x.Scope).HasConversion<string>().HasMaxLength(32).IsRequired();
             e.HasIndex(x => new { x.NormalizedName, x.TenantId }).IsUnique();
 
-            // Hybrid Global + Tenant Query Filter:
-            // Platform scope sees all roles; Tenant scope sees global Tenant system roles (TenantId == null) + own Tenant custom roles only.
             e.HasQueryFilter(r =>
                 IsPlatformScopeOrBypass ||
                 (r.Scope == RoleScopeType.Tenant && (r.TenantId == null || (CurrentTenantId != null && r.TenantId == CurrentTenantId))));
@@ -70,11 +68,11 @@ public sealed class AccessControlDbContext(
             e.HasKey(x => x.Id);
             e.Property(x => x.ResourceScopeType).HasMaxLength(64);
             e.Property(x => x.ResourceScopeId).HasMaxLength(128);
-            e.HasIndex(x => new { x.UserId, x.RoleId, x.TenantId }).IsUnique();
+            e.Property(x => x.Effect).HasConversion<string>().HasMaxLength(16).HasDefaultValue(AuthorizationEffect.Allow).IsRequired();
+            e.HasIndex(x => new { x.UserId, x.RoleId, x.TenantId, x.ResourceScopeType, x.ResourceScopeId, x.Effect }).IsUnique();
             e.HasIndex(x => new { x.UserId, x.TenantId });
             e.HasOne(x => x.Role).WithMany().HasForeignKey(x => x.RoleId).OnDelete(DeleteBehavior.Restrict);
 
-            // Tenant scope strictly isolated to own TenantId; Platform scope sees all.
             e.HasQueryFilter(ur =>
                 IsPlatformScopeOrBypass ||
                 (CurrentTenantId != null && ur.TenantId == CurrentTenantId));

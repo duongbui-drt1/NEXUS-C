@@ -1,3 +1,4 @@
+using Nexus.BuildingBlocks.Infrastructure;
 using Nexus.SharedKernel.Primitives;
 using Nexus.SharedKernel.Results;
 
@@ -6,7 +7,8 @@ namespace Nexus.Modules.Notification.Domain;
 public enum NotificationChannel
 {
     InApp = 1,
-    Email = 2
+    Email = 2,
+    Webhook = 3
 }
 
 public enum DeliveryStatus
@@ -70,6 +72,7 @@ public sealed class NotificationMessage : TenantScopedEntity
 
     public Guid? RecipientUserId { get; private set; }
     public string? RecipientEmail { get; private set; }
+    public string? WebhookUrl { get; private set; }
     public NotificationChannel Channel { get; private set; }
     public string Subject { get; private set; } = string.Empty;
     public string Body { get; private set; } = string.Empty;
@@ -80,13 +83,31 @@ public sealed class NotificationMessage : TenantScopedEntity
     public DateTimeOffset? ReadAt { get; private set; }
     public DateTimeOffset? DeliveredAt { get; private set; }
 
-    public static NotificationMessage Create(Guid tenantId, Guid? userId, string? email, NotificationChannel channel, string subject, string body)
+    public static Result<NotificationMessage> Create(
+        Guid tenantId,
+        Guid? userId,
+        string? email,
+        NotificationChannel channel,
+        string subject,
+        string body,
+        string? webhookUrl = null)
     {
+        if (channel == NotificationChannel.Webhook)
+        {
+            if (string.IsNullOrWhiteSpace(webhookUrl) ||
+                !Uri.TryCreate(webhookUrl, UriKind.Absolute, out var uri) ||
+                SsrfGuard.IsUnsafeTarget(uri))
+            {
+                return Error.Validation("NOTIFICATION_UNSAFE_WEBHOOK", "Webhook notification URL must be a valid public HTTPS URL.");
+            }
+        }
+
         var msg = new NotificationMessage
         {
             Id = Guid.CreateVersion7(),
             RecipientUserId = userId,
             RecipientEmail = email?.Trim().ToLowerInvariant(),
+            WebhookUrl = string.IsNullOrWhiteSpace(webhookUrl) ? null : webhookUrl.Trim(),
             Channel = channel,
             Subject = subject.Trim(),
             Body = body,
@@ -114,5 +135,42 @@ public sealed class NotificationMessage : TenantScopedEntity
     {
         IsRead = true;
         ReadAt = utcNow;
+    }
+}
+
+public sealed class NotificationPreference : TenantScopedEntity
+{
+    private NotificationPreference() { }
+
+    public Guid UserId { get; private set; }
+    public bool InAppEnabled { get; private set; } = true;
+    public bool EmailEnabled { get; private set; } = true;
+    public bool WebhookEnabled { get; private set; } = false;
+    public string DigestFrequency { get; private set; } = "Immediate"; // Immediate, Daily, Weekly
+
+    public static NotificationPreference Create(Guid tenantId, Guid userId, bool inApp, bool email, bool webhook, string digestFrequency)
+    {
+        var pref = new NotificationPreference
+        {
+            Id = Guid.CreateVersion7(),
+            UserId = userId,
+            InAppEnabled = inApp,
+            EmailEnabled = email,
+            WebhookEnabled = webhook,
+            DigestFrequency = string.IsNullOrWhiteSpace(digestFrequency) ? "Immediate" : digestFrequency.Trim()
+        };
+        pref.AssignTenant(tenantId);
+        return pref;
+    }
+
+    public void Update(bool inApp, bool email, bool webhook, string digestFrequency)
+    {
+        InAppEnabled = inApp;
+        EmailEnabled = email;
+        WebhookEnabled = webhook;
+        if (!string.IsNullOrWhiteSpace(digestFrequency))
+        {
+            DigestFrequency = digestFrequency.Trim();
+        }
     }
 }

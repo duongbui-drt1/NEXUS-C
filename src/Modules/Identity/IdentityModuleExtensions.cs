@@ -73,6 +73,9 @@ public static class IdentityModuleExtensions
 
         services.AddScoped<ITokenGenerator, JwtTokenGenerator>();
         services.AddScoped<IAuthService, AuthService>();
+        services.AddScoped<ServiceClientService>();
+        services.AddScoped<IServiceClientService>(sp => sp.GetRequiredService<ServiceClientService>());
+        services.AddScoped<IServicePrincipalValidator>(sp => sp.GetRequiredService<ServiceClientService>());
         services.AddScoped<IUserDirectoryReader, UserDirectoryReader>();
 
         return services;

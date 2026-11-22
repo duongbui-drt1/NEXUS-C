@@ -113,6 +113,23 @@ public sealed class HttpCurrentUser(IHttpContextAccessor httpContextAccessor) : 
 
     public bool IsPlatformUser => string.Equals(Scope, "platform", StringComparison.OrdinalIgnoreCase);
 
+    public bool IsServicePrincipal => string.Equals(Scope, "service", StringComparison.OrdinalIgnoreCase);
+
+    public string? ServiceClientId => Principal?.FindFirstValue("client_id");
+
+    public IReadOnlyList<string> GrantedScopes
+    {
+        get
+        {
+            if (Principal is null) return [];
+            return Principal.FindAll("scp")
+                .Select(c => c.Value)
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+    }
+
     public string? IpAddress => httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString();
 
     public string? UserAgent => httpContextAccessor.HttpContext?.Request.Headers.UserAgent.ToString();

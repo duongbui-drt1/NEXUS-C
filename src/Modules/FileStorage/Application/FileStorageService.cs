@@ -19,14 +19,16 @@ public sealed record FileObjectDto(
     long SizeBytes,
     string Sha256Hash,
     string Category,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    int? RetentionDays = null,
+    DateTimeOffset? RetentionExpiresAt = null);
 
 public sealed record FileDownloadResult(Stream Content, string ContentType, string FileName);
 public sealed record TemporaryDownloadUrlDto(string DownloadUrl, DateTimeOffset ExpiresAt);
 
 public interface IFileStorageService
 {
-    Task<Result<FileObjectDto>> UploadAsync(string fileName, string contentType, Stream content, long sizeBytes, string category = "General", CancellationToken ct = default);
+    Task<Result<FileObjectDto>> UploadAsync(string fileName, string contentType, Stream content, long sizeBytes, string category = "General", int? retentionDays = null, CancellationToken ct = default);
     Task<Result<FileObjectDto>> GetMetadataAsync(Guid fileId, CancellationToken ct = default);
     Task<Result<PagedResult<FileObjectDto>>> ListAsync(PagedRequest paging, CancellationToken ct = default);
     Task<Result<FileDownloadResult>> DownloadAsync(Guid fileId, CancellationToken ct = default);
@@ -50,6 +52,7 @@ public sealed class FileStorageService(
         Stream content,
         long sizeBytes,
         string category = "General",
+        int? retentionDays = null,
         CancellationToken ct = default)
     {
         if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
@@ -76,7 +79,7 @@ public sealed class FileStorageService(
         var hashBytes = await SHA256.HashDataAsync(buffer, ct);
         var hashHex = Convert.ToHexString(hashBytes).ToLowerInvariant();
 
-        var created = StoredFileObject.Create(tenantId, fileName, contentType, sizeBytes, options.Value.MaxUploadSizeBytes, hashHex, category);
+        var created = StoredFileObject.Create(tenantId, fileName, contentType, sizeBytes, options.Value.MaxUploadSizeBytes, hashHex, category, retentionDays, clock.UtcNow);
         if (created.IsFailure) return Result.Failure<FileObjectDto>(created.Error);
 
         var fileObj = created.Value;
@@ -89,7 +92,7 @@ public sealed class FileStorageService(
 
         await auditWriter.WriteAsync(new AuditEntryRequest(
             "files.upload", "StoredFileObject", fileObj.Id.ToString("D"), tenantId, "Success",
-            AfterState: new { fileObj.OriginalFileName, fileObj.ContentType, fileObj.SizeBytes, fileObj.Sha256Hash }), ct);
+            AfterState: new { fileObj.OriginalFileName, fileObj.ContentType, fileObj.SizeBytes, fileObj.Sha256Hash, fileObj.RetentionDays }), ct);
 
         return Map(fileObj);
     }
@@ -115,12 +118,22 @@ public sealed class FileStorageService(
     public async Task<Result<FileDownloadResult>> DownloadAsync(Guid fileId, CancellationToken ct = default)
     {
         if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+        var tenantId = tenantContext.TenantId!.Value;
 
         var fileObj = await db.Files.AsNoTracking().FirstOrDefaultAsync(f => f.Id == fileId, ct);
         if (fileObj is null) return Error.NotFound("FILE_NOT_FOUND", "File was not found.");
 
+        if (fileObj.IsRetentionExpired(clock.UtcNow))
+        {
+            return Error.NotFound("FILE_RETENTION_EXPIRED", "File retention period has expired.");
+        }
+
         var stream = await objectStorage.GetObjectAsync(fileObj.ObjectKey, ct);
         if (stream is null) return Error.NotFound("FILE_BLOB_MISSING", "File content is unavailable in object storage.");
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "files.download", "StoredFileObject", fileObj.Id.ToString("D"), tenantId, "Success",
+            AfterState: new { fileObj.OriginalFileName, fileObj.SizeBytes }), ct);
 
         return new FileDownloadResult(stream, fileObj.ContentType, fileObj.OriginalFileName);
     }
@@ -128,13 +141,23 @@ public sealed class FileStorageService(
     public async Task<Result<TemporaryDownloadUrlDto>> CreateTemporaryDownloadUrlAsync(Guid fileId, int validMinutes = 10, CancellationToken ct = default)
     {
         if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+        var tenantId = tenantContext.TenantId!.Value;
 
         var fileObj = await db.Files.AsNoTracking().FirstOrDefaultAsync(f => f.Id == fileId, ct);
         if (fileObj is null) return Error.NotFound("FILE_NOT_FOUND", "File was not found.");
 
+        if (fileObj.IsRetentionExpired(clock.UtcNow))
+        {
+            return Error.NotFound("FILE_RETENTION_EXPIRED", "File retention period has expired.");
+        }
+
         var expiresAt = clock.UtcNow.AddMinutes(Math.Clamp(validMinutes, 1, 60));
         var expiresUnix = expiresAt.ToUnixTimeSeconds();
         var signature = ComputeSignature(fileObj.Id, fileObj.TenantId, expiresUnix);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "files.temporary_url.create", "StoredFileObject", fileObj.Id.ToString("D"), tenantId, "Success",
+            AfterState: new { fileObj.OriginalFileName, ExpiresAt = expiresAt }), ct);
 
         var url = $"/api/v1/platform/files/{fileObj.Id:D}/signed-download?expires={expiresUnix}&sig={signature}";
         return new TemporaryDownloadUrlDto(url, expiresAt);
@@ -178,12 +201,16 @@ public sealed class FileStorageService(
 
     private string ComputeSignature(Guid fileId, Guid tenantId, long expiresUnix)
     {
-        var secret = string.IsNullOrWhiteSpace(options.Value.SigningSecret)
-            ? "NEXUS_FALLBACK_SIGNING_SECRET_FOR_DEV_ONLY"
-            : options.Value.SigningSecret;
+        var secret = options.Value.SigningSecret;
+        if (string.IsNullOrWhiteSpace(secret) || secret.Length < 16)
+        {
+            throw new InvalidOperationException("ObjectStorage:SigningSecret must be configured to sign file download URLs.");
+        }
+
         return CryptoHelper.ComputeHmacSha256($"{fileId:D}|{tenantId:D}|{expiresUnix}", secret);
     }
 
     private static FileObjectDto Map(StoredFileObject f) => new(
-        f.Id, f.TenantId, f.OriginalFileName, f.ContentType, f.SizeBytes, f.Sha256Hash, f.Category, f.CreatedAt);
+        f.Id, f.TenantId, f.OriginalFileName, f.ContentType, f.SizeBytes, f.Sha256Hash,
+        f.Category, f.CreatedAt, f.RetentionDays, f.RetentionExpiresAt);
 }

@@ -33,6 +33,7 @@ public sealed class NexusPostgresFixture : IAsyncLifetime
 
     public string MigratorConnectionString { get; private set; } = string.Empty;
     public string AppConnectionString { get; private set; } = string.Empty;
+    public string SuperuserDbConnectionString { get; private set; } = string.Empty;
     public string AppRoleName => _appRole;
     public string TempStorageDir => _tempStorageDir;
 
@@ -85,27 +86,35 @@ public sealed class NexusPostgresFixture : IAsyncLifetime
         await using var conn = new NpgsqlConnection(_adminConn);
         await conn.OpenAsync();
 
-        var roleSql = $@"
-            SELECT pg_advisory_lock(74839201);
-            DO $$
-            BEGIN
-                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_migratorRole}') THEN
-                    CREATE ROLE {_migratorRole} WITH LOGIN PASSWORD '{_migratorPass}' NOSUPERUSER NOCREATEDB NOCREATEROLE;
-                ELSE
-                    ALTER ROLE {_migratorRole} WITH LOGIN PASSWORD '{_migratorPass}' NOSUPERUSER NOCREATEDB NOCREATEROLE;
-                END IF;
-
-                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_appRole}') THEN
-                    CREATE ROLE {_appRole} WITH LOGIN PASSWORD '{_appPass}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
-                ELSE
-                    ALTER ROLE {_appRole} WITH LOGIN PASSWORD '{_appPass}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
-                END IF;
-            END $$;
-            SELECT pg_advisory_unlock(74839201);";
-
-        await using (var cmd = new NpgsqlCommand(roleSql, conn))
+        await using (var lockTx = await conn.BeginTransactionAsync())
         {
-            await cmd.ExecuteNonQueryAsync();
+            await using (var lockCmd = new NpgsqlCommand("SELECT pg_advisory_xact_lock(74839201);", conn, lockTx))
+            {
+                await lockCmd.ExecuteNonQueryAsync();
+            }
+
+            var roleSql = $@"
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_migratorRole}') THEN
+                        CREATE ROLE {_migratorRole} WITH LOGIN PASSWORD '{_migratorPass}' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+                    ELSE
+                        ALTER ROLE {_migratorRole} WITH LOGIN PASSWORD '{_migratorPass}' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+                    END IF;
+
+                    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_appRole}') THEN
+                        CREATE ROLE {_appRole} WITH LOGIN PASSWORD '{_appPass}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+                    ELSE
+                        ALTER ROLE {_appRole} WITH LOGIN PASSWORD '{_appPass}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+                    END IF;
+                END $$;";
+
+            await using (var cmd = new NpgsqlCommand(roleSql, conn, lockTx))
+            {
+                await cmd.ExecuteNonQueryAsync();
+            }
+
+            await lockTx.CommitAsync();
         }
 
         await using (var createDb = new NpgsqlCommand($"CREATE DATABASE \"{_dbName}\" OWNER \"{_migratorRole}\";", conn))
@@ -117,6 +126,11 @@ public sealed class NexusPostgresFixture : IAsyncLifetime
         {
             await grantConnect.ExecuteNonQueryAsync();
         }
+
+        SuperuserDbConnectionString = new NpgsqlConnectionStringBuilder(_adminConn)
+        {
+            Database = _dbName
+        }.ConnectionString;
 
         MigratorConnectionString = new NpgsqlConnectionStringBuilder
         {

@@ -23,6 +23,8 @@ public sealed class OutboxMessage : Entity
     public string EventType { get; private set; } = string.Empty;
     public Guid? TenantId { get; private set; }
     public string CorrelationId { get; private set; } = string.Empty;
+    public string Producer { get; private set; } = "nexus-c";
+    public string? CausationId { get; private set; }
     public int SchemaVersion { get; private set; }
     public string PayloadJson { get; private set; } = "{}";
     public DateTimeOffset OccurredAt { get; private set; }
@@ -42,6 +44,8 @@ public sealed class OutboxMessage : Entity
             EventType = envelope.EventType,
             TenantId = envelope.TenantId,
             CorrelationId = envelope.CorrelationId,
+            Producer = string.IsNullOrWhiteSpace(envelope.Producer) ? "nexus-c" : envelope.Producer.Trim(),
+            CausationId = string.IsNullOrWhiteSpace(envelope.CausationId) ? null : envelope.CausationId.Trim(),
             SchemaVersion = envelope.SchemaVersion,
             PayloadJson = envelope.Payload.GetRawText(),
             OccurredAt = envelope.OccurredAt,
@@ -61,7 +65,9 @@ public sealed class OutboxMessage : Entity
             OccurredAt,
             CorrelationId,
             SchemaVersion,
-            doc.RootElement.Clone());
+            doc.RootElement.Clone(),
+            Producer,
+            CausationId);
     }
 
     public void MarkPublished(DateTimeOffset utcNow)
@@ -87,6 +93,15 @@ public sealed class OutboxMessage : Entity
             var backoffSeconds = Math.Min(300, (int)Math.Pow(2, RetryCount) * 5);
             NextAttemptAt = utcNow.AddSeconds(backoffSeconds);
         }
+    }
+
+    public void RequeueForRetry(DateTimeOffset utcNow)
+    {
+        Status = OutboxStatus.Pending;
+        RetryCount = 0;
+        ProcessedAt = null;
+        NextAttemptAt = utcNow;
+        LastError = null;
     }
 }
 
@@ -114,15 +129,24 @@ public sealed class InboxMessage : Entity
 
 public sealed class DeadLetterMessage : Entity
 {
+    public const int MaxManualRetries = 3;
+
     private DeadLetterMessage() { }
 
     public Guid EventId { get; private set; }
     public string EventType { get; private set; } = string.Empty;
     public Guid? TenantId { get; private set; }
     public string CorrelationId { get; private set; } = string.Empty;
+    public string Producer { get; private set; } = "nexus-c";
+    public string? CausationId { get; private set; }
     public string PayloadJson { get; private set; } = "{}";
     public string Reason { get; private set; } = string.Empty;
     public int RetryCount { get; private set; }
+    public int ManualRetryCount { get; private set; }
+    public Guid? LastRetriedByUserId { get; private set; }
+    public DateTimeOffset? LastRetriedAt { get; private set; }
+    public string? RetryHistoryJson { get; private set; }
+    public bool IsResolved { get; private set; }
     public DateTimeOffset FailedAt { get; private set; }
 
     public static DeadLetterMessage FromOutbox(OutboxMessage msg, string reason, DateTimeOffset utcNow)
@@ -133,11 +157,37 @@ public sealed class DeadLetterMessage : Entity
             EventType = msg.EventType,
             TenantId = msg.TenantId,
             CorrelationId = msg.CorrelationId,
+            Producer = msg.Producer,
+            CausationId = msg.CausationId,
             PayloadJson = msg.PayloadJson,
             Reason = reason.Length > 1900 ? reason[..1900] : reason,
             RetryCount = msg.RetryCount,
+            ManualRetryCount = 0,
+            IsResolved = false,
             FailedAt = utcNow
         };
+
+    public bool CanManualRetry() => !IsResolved && ManualRetryCount < MaxManualRetries;
+
+    public void RecordManualRetry(Guid actorUserId, string? note, DateTimeOffset utcNow)
+    {
+        ManualRetryCount++;
+        LastRetriedByUserId = actorUserId;
+        LastRetriedAt = utcNow;
+        IsResolved = true;
+
+        var history = string.IsNullOrWhiteSpace(RetryHistoryJson)
+            ? new List<object>()
+            : JsonSerializer.Deserialize<List<object>>(RetryHistoryJson) ?? [];
+        history.Add(new
+        {
+            Attempt = ManualRetryCount,
+            ActorUserId = actorUserId,
+            RetriedAt = utcNow,
+            Note = note
+        });
+        RetryHistoryJson = JsonSerializer.Serialize(history, EventJsonOptions.Default);
+    }
 }
 
 public sealed class IdempotencyRecord : Entity
@@ -210,9 +260,13 @@ public sealed class MessagingDbContext(
             builder.HasKey(x => x.Id);
             builder.Property(x => x.EventType).HasMaxLength(200).IsRequired();
             builder.Property(x => x.CorrelationId).HasMaxLength(100).IsRequired();
+            builder.Property(x => x.Producer).HasMaxLength(100).HasDefaultValue("nexus-c").IsRequired();
+            builder.Property(x => x.CausationId).HasMaxLength(100);
             builder.Property(x => x.PayloadJson).HasColumnType("jsonb").IsRequired();
             builder.Property(x => x.Reason).HasMaxLength(2000).IsRequired();
+            builder.Property(x => x.RetryHistoryJson).HasColumnType("jsonb");
             builder.HasIndex(x => x.FailedAt);
+            builder.HasIndex(x => x.IsResolved);
         });
 
         modelBuilder.Entity<IdempotencyRecord>(builder =>

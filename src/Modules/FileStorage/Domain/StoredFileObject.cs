@@ -13,6 +13,8 @@ public sealed class StoredFileObject : TenantScopedEntity, ISoftDeletable
     public string Sha256Hash { get; private set; } = string.Empty;
     public string ObjectKey { get; private set; } = string.Empty;
     public string Category { get; private set; } = "General";
+    public int? RetentionDays { get; private set; }
+    public DateTimeOffset? RetentionExpiresAt { get; private set; }
     public bool IsDeleted { get; private set; }
     public DateTimeOffset? DeletedAt { get; private set; }
     public Guid? DeletedBy { get; private set; }
@@ -37,7 +39,9 @@ public sealed class StoredFileObject : TenantScopedEntity, ISoftDeletable
         long sizeBytes,
         long maxAllowedBytes,
         string sha256Hash,
-        string category)
+        string category,
+        int? retentionDays = null,
+        DateTimeOffset? utcNow = null)
     {
         if (string.IsNullOrWhiteSpace(originalFileName))
         {
@@ -54,9 +58,20 @@ public sealed class StoredFileObject : TenantScopedEntity, ISoftDeletable
             return Error.Validation("FILE_UNSUPPORTED_CONTENT_TYPE", $"Content type '{contentType}' is not permitted.");
         }
 
+        if (retentionDays.HasValue && (retentionDays.Value < 1 || retentionDays.Value > 3650))
+        {
+            return Error.Validation("FILE_INVALID_RETENTION", "RetentionDays must be between 1 and 3650 days.");
+        }
+
         var id = Guid.CreateVersion7();
         var cleanName = Path.GetFileName(originalFileName).Trim();
+        if (string.IsNullOrWhiteSpace(cleanName) || cleanName.Contains("..", StringComparison.Ordinal))
+        {
+            return Error.Validation("FILE_INVALID_NAME", "Sanitized file name is invalid.");
+        }
+
         var objectKey = $"tenants/{tenantId:D}/{id:D}/{cleanName}";
+        var now = utcNow ?? DateTimeOffset.UtcNow;
 
         var obj = new StoredFileObject
         {
@@ -66,11 +81,16 @@ public sealed class StoredFileObject : TenantScopedEntity, ISoftDeletable
             SizeBytes = sizeBytes,
             Sha256Hash = sha256Hash,
             ObjectKey = objectKey,
-            Category = string.IsNullOrWhiteSpace(category) ? "General" : category.Trim()
+            Category = string.IsNullOrWhiteSpace(category) ? "General" : category.Trim(),
+            RetentionDays = retentionDays,
+            RetentionExpiresAt = retentionDays.HasValue ? now.AddDays(retentionDays.Value) : null
         };
         obj.AssignTenant(tenantId);
         return obj;
     }
+
+    public bool IsRetentionExpired(DateTimeOffset utcNow)
+        => RetentionExpiresAt.HasValue && RetentionExpiresAt.Value <= utcNow;
 
     public void SoftDelete(Guid? actorUserId, DateTimeOffset utcNow)
     {

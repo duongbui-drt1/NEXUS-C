@@ -22,6 +22,10 @@ public interface ICurrentUser
     bool IsPlatformUser { get; }
     string? IpAddress { get; }
     string? UserAgent { get; }
+
+    bool IsServicePrincipal => false;
+    string? ServiceClientId => null;
+    IReadOnlyList<string> GrantedScopes => [];
 }
 
 public interface ICorrelationContext

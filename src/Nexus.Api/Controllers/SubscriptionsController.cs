@@ -1,10 +1,13 @@
 using Microsoft.AspNetCore.Mvc;
 using Nexus.BuildingBlocks.Web;
 using Nexus.Modules.Subscription.Application;
+using Nexus.Modules.Subscription.Domain;
 using Nexus.SharedKernel.Context;
 using Nexus.SharedKernel.Security;
 
 namespace Nexus.Api.Controllers;
+
+public sealed record UpdateSubscriptionStatusRequest(SubscriptionStatus Status, string? Reason = null);
 
 [ApiController]
 [Route("api/v1/platform/subscriptions")]
@@ -25,6 +28,11 @@ public sealed class SubscriptionsController(ISubscriptionService subscriptionSer
     public async Task<IActionResult> AssignPlan([FromBody] AssignSubscriptionRequest request, CancellationToken ct)
         => (await subscriptionService.AssignPlanToTenantAsync(request, ct)).ToActionResult(HttpContext, StatusCodes.Status201Created);
 
+    [HttpPost("{tenantId:guid}/status")]
+    [RequirePermission(Permissions.SubscriptionsManage)]
+    public async Task<IActionResult> UpdateStatus(Guid tenantId, [FromBody] UpdateSubscriptionStatusRequest request, CancellationToken ct)
+        => (await subscriptionService.UpdateSubscriptionStatusAsync(tenantId, request.Status, request.Reason, ct)).ToActionResult(HttpContext);
+
     [HttpGet("current")]
     [RequirePermission(Permissions.SubscriptionsRead)]
     public async Task<IActionResult> GetCurrent(CancellationToken ct)
@@ -43,4 +51,14 @@ public sealed class SubscriptionsController(ISubscriptionService subscriptionSer
 
         return (await subscriptionService.CheckEntitlementAsync(tenantContext.TenantId!.Value, featureCode, ct)).ToActionResult(HttpContext);
     }
+
+    [HttpPost("usage")]
+    [RequirePermission(Permissions.SubscriptionsRead)]
+    public async Task<IActionResult> RecordUsage([FromBody] RecordUsageRequest request, CancellationToken ct)
+        => (await subscriptionService.RecordUsageIdempotentAsync(request, ct)).ToActionResult(HttpContext, StatusCodes.Status201Created);
+
+    [HttpGet("usage")]
+    [RequirePermission(Permissions.SubscriptionsRead)]
+    public async Task<IActionResult> ListUsage(CancellationToken ct)
+        => (await subscriptionService.ListUsageSummaryAsync(ct)).ToActionResult(HttpContext);
 }

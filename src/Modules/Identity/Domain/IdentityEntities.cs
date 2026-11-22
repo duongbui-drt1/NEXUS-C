@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Identity;
 using Nexus.SharedKernel.Primitives;
+using Nexus.SharedKernel.Results;
 
 namespace Nexus.Modules.Identity.Domain;
 
@@ -190,4 +191,158 @@ public sealed class LoginAttempt : Entity
             UserAgent = ua?.Length > 500 ? ua[..500] : ua,
             AttemptedAt = utcNow
         };
+}
+
+/// <summary>
+/// Registered machine-to-machine OAuth 2.0 Client Credentials identity (e.g., NEXUS_F, NEXUS_E, NEXUS_M).
+/// Secrets are stored exclusively as salted SHA-256 hashes — never plaintext.
+/// </summary>
+public sealed class ServiceClient : AuditableEntity
+{
+    private ServiceClient() { }
+
+    public string ClientId { get; private set; } = string.Empty;
+    public string Name { get; private set; } = string.Empty;
+    public string? ApplicationCode { get; private set; }
+    public Guid? TenantId { get; private set; }
+    public string SecretSalt { get; private set; } = string.Empty;
+    public string ClientSecretHash { get; private set; } = string.Empty;
+    public string SecretPrefix { get; private set; } = string.Empty;
+    public string AllowedScopes { get; private set; } = string.Empty; // comma-separated explicit permission codes
+    public int RateLimitPerMinute { get; private set; } = 300;
+    public bool IsActive { get; private set; } = true;
+    public DateTimeOffset? RevokedAt { get; private set; }
+    public DateTimeOffset? LastUsedAt { get; private set; }
+    public DateTimeOffset? SecretRotatedAt { get; private set; }
+
+    public IReadOnlyList<string> GetAllowedScopes()
+        => AllowedScopes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    public static Result<ServiceClient> Create(
+        string clientId,
+        string name,
+        string? applicationCode,
+        Guid? tenantId,
+        string secretSalt,
+        string secretHash,
+        string secretPrefix,
+        IReadOnlyList<string> scopes,
+        int rateLimitPerMinute = 300)
+    {
+        if (string.IsNullOrWhiteSpace(clientId) || clientId.Trim().Length > 100)
+        {
+            return Error.Validation("SERVICE_CLIENT_INVALID_ID", "ClientId is required (max 100 chars).");
+        }
+
+        if (string.IsNullOrWhiteSpace(name) || name.Trim().Length > 200)
+        {
+            return Error.Validation("SERVICE_CLIENT_INVALID_NAME", "Client name is required (max 200 chars).");
+        }
+
+        if (scopes.Count == 0)
+        {
+            return Error.Validation("SERVICE_CLIENT_SCOPES_REQUIRED", "At least one explicit scope is required.");
+        }
+
+        return new ServiceClient
+        {
+            Id = Guid.CreateVersion7(),
+            ClientId = clientId.Trim().ToLowerInvariant(),
+            Name = name.Trim(),
+            ApplicationCode = string.IsNullOrWhiteSpace(applicationCode) ? null : applicationCode.Trim().ToUpperInvariant(),
+            TenantId = tenantId,
+            SecretSalt = secretSalt,
+            ClientSecretHash = secretHash,
+            SecretPrefix = secretPrefix,
+            AllowedScopes = string.Join(',', scopes.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(s => s)),
+            RateLimitPerMinute = Math.Clamp(rateLimitPerMinute, 10, 10_000),
+            IsActive = true
+        };
+    }
+
+    public void RotateSecret(string newSalt, string newHash, string newPrefix, DateTimeOffset utcNow)
+    {
+        SecretSalt = newSalt;
+        ClientSecretHash = newHash;
+        SecretPrefix = newPrefix;
+        SecretRotatedAt = utcNow;
+    }
+
+    public void Revoke(DateTimeOffset utcNow)
+    {
+        IsActive = false;
+        RevokedAt = utcNow;
+    }
+
+    public void MarkUsed(DateTimeOffset utcNow) => LastUsedAt = utcNow;
+}
+
+/// <summary>
+/// Strictly scoped API key with one-way SHA-256 verification. Never bypasses RBAC permissions.
+/// </summary>
+public sealed class ApiKeyRecord : AuditableEntity
+{
+    private ApiKeyRecord() { }
+
+    public string Name { get; private set; } = string.Empty;
+    public Guid? TenantId { get; private set; }
+    public string KeyPrefix { get; private set; } = string.Empty;
+    public string KeyHash { get; private set; } = string.Empty;
+    public string AllowedScopes { get; private set; } = string.Empty;
+    public DateTimeOffset? ExpiresAt { get; private set; }
+    public bool IsActive { get; private set; } = true;
+    public DateTimeOffset? RevokedAt { get; private set; }
+    public DateTimeOffset? LastUsedAt { get; private set; }
+    public Guid? OwnerUserId { get; private set; }
+
+    public IReadOnlyList<string> GetAllowedScopes()
+        => AllowedScopes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    public static Result<ApiKeyRecord> Create(
+        string name,
+        Guid? tenantId,
+        string keyPrefix,
+        string keyHash,
+        IReadOnlyList<string> scopes,
+        DateTimeOffset? expiresAt,
+        Guid? ownerUserId)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.Trim().Length > 150)
+        {
+            return Error.Validation("API_KEY_INVALID_NAME", "API key name is required (max 150 chars).");
+        }
+
+        if (scopes.Count == 0)
+        {
+            return Error.Validation("API_KEY_SCOPES_REQUIRED", "API key must declare at least one explicit permission scope.");
+        }
+
+        return new ApiKeyRecord
+        {
+            Id = Guid.CreateVersion7(),
+            Name = name.Trim(),
+            TenantId = tenantId,
+            KeyPrefix = keyPrefix,
+            KeyHash = keyHash,
+            AllowedScopes = string.Join(',', scopes.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(s => s)),
+            ExpiresAt = expiresAt,
+            IsActive = true,
+            OwnerUserId = ownerUserId
+        };
+    }
+
+    public void Rotate(string newPrefix, string newHash, DateTimeOffset? newExpiresAt)
+    {
+        KeyPrefix = newPrefix;
+        KeyHash = newHash;
+        if (newExpiresAt.HasValue) ExpiresAt = newExpiresAt;
+    }
+
+    public void Revoke(DateTimeOffset utcNow)
+    {
+        IsActive = false;
+        RevokedAt = utcNow;
+    }
+
+    public void MarkUsed(DateTimeOffset utcNow) => LastUsedAt = utcNow;
 }

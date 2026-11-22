@@ -17,6 +17,8 @@ public sealed class IdentityModuleDbContext(DbContextOptions<IdentityModuleDbCon
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<ExternalIdentity> ExternalIdentities => Set<ExternalIdentity>();
     public DbSet<LoginAttempt> LoginAttempts => Set<LoginAttempt>();
+    public DbSet<ServiceClient> ServiceClients => Set<ServiceClient>();
+    public DbSet<ApiKeyRecord> ApiKeys => Set<ApiKeyRecord>();
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
     public void StageOutboxEvent(EventEnvelope envelope)
@@ -98,11 +100,42 @@ public sealed class IdentityModuleDbContext(DbContextOptions<IdentityModuleDbCon
             e.HasIndex(x => new { x.Email, x.AttemptedAt });
         });
 
+        builder.Entity<ServiceClient>(e =>
+        {
+            e.ToTable("service_clients", SchemaName);
+            e.HasKey(x => x.Id);
+            e.Property(x => x.ClientId).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            e.Property(x => x.ApplicationCode).HasMaxLength(32);
+            e.Property(x => x.SecretSalt).HasMaxLength(128).IsRequired();
+            e.Property(x => x.ClientSecretHash).HasMaxLength(128).IsRequired();
+            e.Property(x => x.SecretPrefix).HasMaxLength(32).IsRequired();
+            e.Property(x => x.AllowedScopes).HasMaxLength(2000).IsRequired();
+            e.Property(x => x.RowVersion).IsRowVersion();
+            e.HasIndex(x => x.ClientId).IsUnique();
+            e.HasIndex(x => x.TenantId);
+        });
+
+        builder.Entity<ApiKeyRecord>(e =>
+        {
+            e.ToTable("api_keys", SchemaName);
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasMaxLength(150).IsRequired();
+            e.Property(x => x.KeyPrefix).HasMaxLength(32).IsRequired();
+            e.Property(x => x.KeyHash).HasMaxLength(128).IsRequired();
+            e.Property(x => x.AllowedScopes).HasMaxLength(2000).IsRequired();
+            e.Property(x => x.RowVersion).IsRowVersion();
+            e.HasIndex(x => x.KeyHash).IsUnique();
+            e.HasIndex(x => x.TenantId);
+        });
+
         builder.Entity<OutboxMessage>(e =>
         {
             e.ToTable("outbox_messages", "messaging", t => t.ExcludeFromMigrations());
             e.HasKey(x => x.Id);
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32).IsRequired();
+            e.Property(x => x.Producer).HasMaxLength(100).HasDefaultValue("nexus-c").IsRequired();
+            e.Property(x => x.CausationId).HasMaxLength(100);
             e.Property(x => x.PayloadJson).HasColumnType("jsonb").IsRequired();
         });
     }

@@ -51,7 +51,23 @@ public sealed class PermissionAuthorizationHandler(
         AuthorizationHandlerContext context,
         PermissionRequirement requirement)
     {
-        if (!currentUser.IsAuthenticated || !currentUser.UserId.HasValue)
+        if (!currentUser.IsAuthenticated)
+        {
+            return;
+        }
+
+        // Machine-to-machine OAuth2 client_credentials or scoped API key principals:
+        // Strictly evaluate explicit granted scopes (zero superuser bypass!).
+        if (currentUser.IsServicePrincipal)
+        {
+            if (currentUser.GrantedScopes.Contains(requirement.Permission, StringComparer.OrdinalIgnoreCase))
+            {
+                context.Succeed(requirement);
+            }
+            return;
+        }
+
+        if (!currentUser.UserId.HasValue)
         {
             return;
         }

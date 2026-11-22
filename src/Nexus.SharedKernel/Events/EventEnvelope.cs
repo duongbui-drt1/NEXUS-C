@@ -9,7 +9,9 @@ public sealed record EventEnvelope(
     DateTimeOffset OccurredAt,
     string CorrelationId,
     int SchemaVersion,
-    JsonElement Payload)
+    JsonElement Payload,
+    string Producer = "nexus-c",
+    string? CausationId = null)
 {
     public static EventEnvelope Create<TPayload>(
         string eventType,
@@ -17,7 +19,9 @@ public sealed record EventEnvelope(
         string correlationId,
         TPayload payload,
         int schemaVersion = 1,
-        DateTimeOffset? occurredAt = null)
+        DateTimeOffset? occurredAt = null,
+        string producer = "nexus-c",
+        string? causationId = null)
     {
         var element = JsonSerializer.SerializeToElement(payload, EventJsonOptions.Default);
         return new EventEnvelope(
@@ -27,7 +31,9 @@ public sealed record EventEnvelope(
             occurredAt ?? DateTimeOffset.UtcNow,
             correlationId,
             schemaVersion,
-            element);
+            element,
+            producer,
+            causationId);
     }
 }
 
@@ -53,7 +59,18 @@ public static class PlatformEventTypes
 
     public const string SubscriptionActivatedV1 = "platform.subscription.activated.v1";
     public const string SubscriptionExpiredV1 = "platform.subscription.expired.v1";
+    public const string SubscriptionCancelledV1 = "platform.subscription.cancelled.v1";
 
+    public const string ApplicationActivatedV1 = "platform.application.activated.v1";
+    public const string ApplicationDeactivatedV1 = "platform.application.deactivated.v1";
+
+    public const string WorkflowSubmittedV1 = "platform.workflow.submitted.v1";
     public const string WorkflowApprovedV1 = "platform.workflow.approved.v1";
     public const string WorkflowRejectedV1 = "platform.workflow.rejected.v1";
+    public const string WorkflowCancelledV1 = "platform.workflow.cancelled.v1";
+    public const string WorkflowDelegatedV1 = "platform.workflow.delegated.v1";
+    public const string WorkflowEscalatedV1 = "platform.workflow.escalated.v1";
+
+    public const string ServiceClientCreatedV1 = "platform.service_client.created.v1";
+    public const string ServiceClientRevokedV1 = "platform.service_client.revoked.v1";
 }

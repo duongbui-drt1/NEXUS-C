@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Distributed;
 using Nexus.Modules.AccessControl.Domain;
 using Nexus.Modules.AccessControl.Infrastructure;
 using Nexus.SharedKernel.Context;
@@ -11,8 +13,22 @@ namespace Nexus.Modules.AccessControl.Application;
 public sealed record PermissionDto(Guid Id, string Code, string Name, string Scope, string Category);
 public sealed record RoleDto(Guid Id, Guid? TenantId, string Name, string Description, string Scope, bool IsSystemRole, IReadOnlyList<string> Permissions);
 public sealed record CreateRoleRequest(string Name, string Description, IReadOnlyList<string> PermissionCodes);
-public sealed record AssignRoleRequest(Guid UserId, Guid RoleId, string? ResourceScopeType = null, string? ResourceScopeId = null);
-public sealed record UserRoleDto(Guid Id, Guid UserId, Guid RoleId, string RoleName, Guid? TenantId, string Scope, string? ResourceScopeType, string? ResourceScopeId);
+public sealed record AssignRoleRequest(
+    Guid UserId,
+    Guid RoleId,
+    string? ResourceScopeType = null,
+    string? ResourceScopeId = null,
+    AuthorizationEffect Effect = AuthorizationEffect.Allow);
+public sealed record UserRoleDto(
+    Guid Id,
+    Guid UserId,
+    Guid RoleId,
+    string RoleName,
+    Guid? TenantId,
+    string Scope,
+    string? ResourceScopeType,
+    string? ResourceScopeId,
+    string Effect = "Allow");
 
 public interface IAccessControlService
 {
@@ -31,8 +47,25 @@ public sealed class AccessControlService(
     ICurrentUser currentUser,
     IUserDirectoryReader userDirectory,
     ITenantAccessValidator tenantValidator,
+    IOrganizationScopeReader orgScopeReader,
+    IDistributedCache cache,
     IAuditWriter auditWriter) : IAccessControlService, IPermissionEvaluator
 {
+    private static readonly HashSet<string> ValidScopeTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Platform", "Tenant", "LegalEntity", "Branch", "OrganizationUnit", "Resource"
+    };
+
+    private static string BuildPermCacheKey(Guid userId, Guid? tenantId, bool isPlatformScope)
+        => $"perm:v1:{(isPlatformScope && !tenantId.HasValue ? "platform" : tenantId?.ToString("N") ?? "none")}:{userId:N}";
+
+    private async Task InvalidateUserPermissionCacheAsync(Guid userId, Guid? tenantId, CancellationToken ct)
+    {
+        await cache.RemoveAsync(BuildPermCacheKey(userId, tenantId, isPlatformScope: !tenantId.HasValue), ct);
+        await cache.RemoveAsync(BuildPermCacheKey(userId, tenantId, isPlatformScope: false), ct);
+        await cache.RemoveAsync(BuildPermCacheKey(userId, null, isPlatformScope: true), ct);
+    }
+
     public async Task SeedDefaultsAsync(CancellationToken ct = default)
     {
         var existingPermissions = await db.Permissions.ToDictionaryAsync(p => p.Code, ct);
@@ -58,7 +91,7 @@ public sealed class AccessControlService(
                 "Read-only platform support engineer",
                 RoleScopeType.Platform,
                 [
-                    Permissions.TenantsRead, Permissions.UsersRead, Permissions.RolesRead,
+                    Permissions.TenantsRead, Permissions.ApplicationsRead, Permissions.UsersRead, Permissions.RolesRead,
                     Permissions.AuditRead, Permissions.AuditReadAllTenants, Permissions.SubscriptionsRead,
                     Permissions.ConfigurationRead, Permissions.ApiRead, Permissions.OperationsRead
                 ]),
@@ -72,6 +105,7 @@ public sealed class AccessControlService(
                 "Tenant administrator with explicit least-privilege operational permissions",
                 RoleScopeType.Tenant,
                 [
+                    Permissions.ApplicationsRead, Permissions.SubscriptionsRead,
                     Permissions.OrganizationsRead, Permissions.OrganizationsManage,
                     Permissions.UsersRead, Permissions.UsersCreate, Permissions.UsersManage,
                     Permissions.RolesRead, Permissions.RolesAssign,
@@ -89,7 +123,7 @@ public sealed class AccessControlService(
                 [
                     Permissions.OrganizationsRead, Permissions.AuditRead,
                     Permissions.WorkflowsRead, Permissions.WorkflowsApprove,
-                    Permissions.SubscriptionsRead, Permissions.ConfigurationRead,
+                    Permissions.SubscriptionsRead, Permissions.ApplicationsRead, Permissions.ConfigurationRead,
                     Permissions.NotificationsRead, Permissions.FilesRead, Permissions.FilesUpload
                 ]),
 
@@ -133,7 +167,7 @@ public sealed class AccessControlService(
                 [
                     Permissions.AuditRead, Permissions.OrganizationsRead, Permissions.UsersRead,
                     Permissions.RolesRead, Permissions.WorkflowsRead, Permissions.SubscriptionsRead,
-                    Permissions.ConfigurationRead, Permissions.IntegrationsRead, Permissions.FilesRead
+                    Permissions.ApplicationsRead, Permissions.ConfigurationRead, Permissions.IntegrationsRead, Permissions.FilesRead
                 ])
         };
 
@@ -230,7 +264,6 @@ public sealed class AccessControlService(
             return Error.Validation("ROLE_INVALID_PERMISSIONS", "One or more permission codes are invalid.");
         }
 
-        // Enforce scope isolation: Tenant roles CANNOT include Platform-only permissions!
         if (scope == RoleScopeType.Tenant && perms.Any(p => p.Scope == PermissionScope.Platform))
         {
             return Error.Forbidden("ROLE_PRIVILEGE_ESCALATION", "Tenant roles cannot be granted platform-only permissions.");
@@ -253,13 +286,17 @@ public sealed class AccessControlService(
 
     public async Task<Result<UserRoleDto>> AssignRoleAsync(AssignRoleRequest request, CancellationToken ct = default)
     {
+        if (!string.IsNullOrWhiteSpace(request.ResourceScopeType) && !ValidScopeTypes.Contains(request.ResourceScopeType.Trim()))
+        {
+            return Error.Validation("ROLE_INVALID_RESOURCE_SCOPE", $"Unsupported ResourceScopeType '{request.ResourceScopeType}'. Supported: Platform, Tenant, LegalEntity, Branch, OrganizationUnit, Resource.");
+        }
+
         var role = await db.Roles.AsNoTracking().FirstOrDefaultAsync(r => r.Id == request.RoleId, ct);
         if (role is null)
         {
             return Error.NotFound("ROLE_NOT_FOUND", "Role was not found.");
         }
 
-        // Enforce strict scope check: tenant users cannot assign Platform roles or another tenant's custom role
         if (!currentUser.IsPlatformUser)
         {
             if (role.Scope == RoleScopeType.Platform)
@@ -279,14 +316,12 @@ public sealed class AccessControlService(
             return Error.Validation("TENANT_CONTEXT_REQUIRED", "A tenant context is required to assign a tenant-scoped role.");
         }
 
-        // Verify target user exists
         var targetUser = await userDirectory.GetByIdAsync(request.UserId, ct);
         if (targetUser is null)
         {
             return Error.NotFound("USER_NOT_FOUND", $"User '{request.UserId}' was not found.");
         }
 
-        // For tenant-scoped role assignments, verify the user holds an active membership in the target tenant!
         if (role.Scope == RoleScopeType.Tenant && effectiveTenantId.HasValue)
         {
             var membership = await tenantValidator.ValidateMembershipAsync(request.UserId, effectiveTenantId.Value, ct);
@@ -298,22 +333,34 @@ public sealed class AccessControlService(
             }
         }
 
+        var normScopeType = string.IsNullOrWhiteSpace(request.ResourceScopeType) ? null : request.ResourceScopeType.Trim();
+        var normScopeId = string.IsNullOrWhiteSpace(request.ResourceScopeId) ? null : request.ResourceScopeId.Trim();
+
         var exists = await db.UserRoles.AsNoTracking()
-            .AnyAsync(ur => ur.UserId == request.UserId && ur.RoleId == role.Id && ur.TenantId == effectiveTenantId, ct);
+            .AnyAsync(ur => ur.UserId == request.UserId
+                            && ur.RoleId == role.Id
+                            && ur.TenantId == effectiveTenantId
+                            && ur.ResourceScopeType == normScopeType
+                            && ur.ResourceScopeId == normScopeId
+                            && ur.Effect == request.Effect, ct);
         if (exists)
         {
-            return Error.Conflict("USER_ROLE_EXISTS", "User already holds this role in the target scope.");
+            return Error.Conflict("USER_ROLE_EXISTS", "User already holds this role assignment in the target scope.");
         }
 
-        var userRole = UserRole.Assign(request.UserId, role.Id, effectiveTenantId, request.ResourceScopeType, request.ResourceScopeId);
+        var userRole = UserRole.Assign(request.UserId, role.Id, effectiveTenantId, normScopeType, normScopeId, request.Effect);
         db.UserRoles.Add(userRole);
         await db.SaveChangesAsync(ct);
 
+        await InvalidateUserPermissionCacheAsync(request.UserId, effectiveTenantId, ct);
+
         await auditWriter.WriteAsync(new AuditEntryRequest(
             "access_control.role.assign", "UserRole", userRole.Id.ToString("D"), effectiveTenantId, "Success",
-            AfterState: new { userRole.UserId, Role = role.Name, userRole.TenantId }), ct);
+            AfterState: new { userRole.UserId, Role = role.Name, userRole.TenantId, userRole.ResourceScopeType, userRole.ResourceScopeId, Effect = userRole.Effect.ToString() }), ct);
 
-        return new UserRoleDto(userRole.Id, userRole.UserId, role.Id, role.Name, userRole.TenantId, role.Scope.ToString(), userRole.ResourceScopeType, userRole.ResourceScopeId);
+        return new UserRoleDto(
+            userRole.Id, userRole.UserId, role.Id, role.Name, userRole.TenantId,
+            role.Scope.ToString(), userRole.ResourceScopeType, userRole.ResourceScopeId, userRole.Effect.ToString());
     }
 
     public async Task<Result> RevokeRoleAsync(Guid userRoleId, CancellationToken ct = default)
@@ -332,9 +379,11 @@ public sealed class AccessControlService(
         db.UserRoles.Remove(assignment);
         await db.SaveChangesAsync(ct);
 
+        await InvalidateUserPermissionCacheAsync(assignment.UserId, assignment.TenantId, ct);
+
         await auditWriter.WriteAsync(new AuditEntryRequest(
             "access_control.role.revoke", "UserRole", userRoleId.ToString("D"), assignment.TenantId, "Success",
-            BeforeState: new { assignment.UserId, Role = assignment.Role?.Name, assignment.TenantId }), ct);
+            BeforeState: new { assignment.UserId, Role = assignment.Role?.Name, assignment.TenantId, assignment.ResourceScopeType, assignment.ResourceScopeId, Effect = assignment.Effect.ToString() }), ct);
 
         return Result.Success();
     }
@@ -354,7 +403,9 @@ public sealed class AccessControlService(
         }
 
         var list = await query
-            .Select(ur => new UserRoleDto(ur.Id, ur.UserId, ur.RoleId, ur.Role!.Name, ur.TenantId, ur.Role.Scope.ToString(), ur.ResourceScopeType, ur.ResourceScopeId))
+            .Select(ur => new UserRoleDto(
+                ur.Id, ur.UserId, ur.RoleId, ur.Role!.Name, ur.TenantId,
+                ur.Role.Scope.ToString(), ur.ResourceScopeType, ur.ResourceScopeId, ur.Effect.ToString()))
             .ToListAsync(ct);
 
         return list;
@@ -362,7 +413,8 @@ public sealed class AccessControlService(
 
     public async Task<IReadOnlyList<string>> GetRoleNamesAsync(Guid userId, Guid? tenantId, bool isPlatformScope, CancellationToken ct = default)
     {
-        var roleQuery = db.UserRoles.AsNoTracking().Where(ur => ur.UserId == userId);
+        var roleQuery = db.UserRoles.AsNoTracking()
+            .Where(ur => ur.UserId == userId && ur.Effect == AuthorizationEffect.Allow);
 
         if (isPlatformScope && !tenantId.HasValue)
         {
@@ -390,17 +442,36 @@ public sealed class AccessControlService(
 
     public async Task<IReadOnlyList<string>> GetPermissionsAsync(Guid userId, Guid? tenantId, bool isPlatformScope, CancellationToken ct = default)
     {
+        var cacheKey = BuildPermCacheKey(userId, tenantId, isPlatformScope);
+        try
+        {
+            var cached = await cache.GetStringAsync(cacheKey, ct);
+            if (!string.IsNullOrEmpty(cached))
+            {
+                var parsed = JsonSerializer.Deserialize<List<string>>(cached);
+                if (parsed is not null)
+                {
+                    return parsed;
+                }
+            }
+        }
+        catch
+        {
+            // Fall through to authoritative database evaluation if cache is transiently unavailable
+        }
+
         var roleQuery = db.UserRoles.AsNoTracking()
+            .Include(ur => ur.Role!)
+            .ThenInclude(r => r.RolePermissions)
+            .ThenInclude(rp => rp.Permission)
             .Where(ur => ur.UserId == userId);
 
         if (isPlatformScope && !tenantId.HasValue)
         {
-            // Platform-scoped session: evaluate platform roles only (TenantId == null)
             roleQuery = roleQuery.Where(ur => ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform);
         }
         else if (tenantId.HasValue)
         {
-            // Tenant-scoped session: strictly evaluate ONLY roles bound to THIS exact tenantId!
             roleQuery = roleQuery.Where(ur => ur.TenantId == tenantId.Value && ur.Role!.Scope == RoleScopeType.Tenant);
         }
         else
@@ -408,13 +479,32 @@ public sealed class AccessControlService(
             return [];
         }
 
-        var permCodes = await roleQuery
-            .SelectMany(ur => ur.Role!.RolePermissions)
-            .Select(rp => rp.Permission!.Code)
-            .Distinct()
-            .ToListAsync(ct);
+        var assignments = await roleQuery.ToListAsync(ct);
 
-        // Extra defense-in-depth: if not platform scope, filter out any platform-only permission code
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var explicitlyDenied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var ur in assignments)
+        {
+            if (ur.Role is null) continue;
+            var codes = ur.Role.RolePermissions
+                .Where(rp => rp.Permission is not null)
+                .Select(rp => rp.Permission!.Code);
+
+            if (ur.Effect == AuthorizationEffect.Deny && string.IsNullOrWhiteSpace(ur.ResourceScopeType))
+            {
+                foreach (var c in codes) explicitlyDenied.Add(c);
+            }
+            else if (ur.Effect == AuthorizationEffect.Allow)
+            {
+                foreach (var c in codes) allowed.Add(c);
+            }
+        }
+
+        allowed.ExceptWith(explicitlyDenied);
+
+        var permCodes = allowed.OrderBy(c => c).ToList();
+
         if (!isPlatformScope)
         {
             var platformOnly = Permissions.Catalog
@@ -425,7 +515,170 @@ public sealed class AccessControlService(
             permCodes = permCodes.Where(c => !platformOnly.Contains(c)).ToList();
         }
 
+        try
+        {
+            await cache.SetStringAsync(
+                cacheKey,
+                JsonSerializer.Serialize(permCodes),
+                new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2) },
+                ct);
+        }
+        catch
+        {
+            // Non-fatal cache write failure
+        }
+
         return permCodes;
+    }
+
+    public async Task<AuthorizationDecision> EvaluatePolicyAsync(AuthorizationCheckRequest request, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(request.PermissionCode))
+        {
+            return new AuthorizationDecision(false, "PERMISSION_CODE_REQUIRED");
+        }
+
+        var platformOnly = Permissions.Catalog
+            .Where(c => c.Scope == PermissionScope.Platform)
+            .Select(c => c.Code)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (!request.IsPlatformScope && platformOnly.Contains(request.PermissionCode))
+        {
+            return new AuthorizationDecision(false, "PLATFORM_SCOPE_REQUIRED");
+        }
+
+        var query = db.UserRoles.AsNoTracking()
+            .Include(ur => ur.Role!)
+            .ThenInclude(r => r.RolePermissions)
+            .ThenInclude(rp => rp.Permission)
+            .Where(ur => ur.UserId == request.UserId);
+
+        if (request.IsPlatformScope && !request.TenantId.HasValue)
+        {
+            query = query.Where(ur => ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform);
+        }
+        else if (request.TenantId.HasValue)
+        {
+            query = query.Where(ur => ur.TenantId == request.TenantId.Value && ur.Role!.Scope == RoleScopeType.Tenant);
+        }
+        else
+        {
+            return new AuthorizationDecision(false, "SECURITY_CONTEXT_MISSING");
+        }
+
+        var assignments = await query.ToListAsync(ct);
+        var matchingRoleAssignments = assignments
+            .Where(ur => ur.Role?.RolePermissions.Any(rp =>
+                rp.Permission != null && string.Equals(rp.Permission.Code, request.PermissionCode, StringComparison.OrdinalIgnoreCase)) == true)
+            .ToList();
+
+        if (matchingRoleAssignments.Count == 0)
+        {
+            return new AuthorizationDecision(false, "PERMISSION_NOT_GRANTED");
+        }
+
+        // 1. Evaluate Explicit Deny first (applies globally or for matching scope)
+        foreach (var deny in matchingRoleAssignments.Where(ur => ur.Effect == AuthorizationEffect.Deny))
+        {
+            if (ScopeMatches(deny, request.ScopeType, request.ScopeId))
+            {
+                return new AuthorizationDecision(false, "EXPLICIT_DENY", ExplicitDeny: true);
+            }
+        }
+
+        // 2. Evaluate Allow assignments
+        var allows = matchingRoleAssignments.Where(ur => ur.Effect == AuthorizationEffect.Allow).ToList();
+        if (allows.Count == 0)
+        {
+            return new AuthorizationDecision(false, "PERMISSION_NOT_GRANTED");
+        }
+
+        // Unscoped check (no specific org/resource target requested)
+        if (string.IsNullOrWhiteSpace(request.ScopeType) ||
+            string.Equals(request.ScopeType, "Platform", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(request.ScopeType, "Tenant", StringComparison.OrdinalIgnoreCase))
+        {
+            return new AuthorizationDecision(true, "ALLOWED_BY_ROLE");
+        }
+
+        // Explicit resource/org scope match from a scoped UserRole assignment
+        if (allows.Any(a => !string.IsNullOrWhiteSpace(a.ResourceScopeType) && ScopeMatches(a, request.ScopeType, request.ScopeId)))
+        {
+            return new AuthorizationDecision(true, "ALLOWED_BY_SCOPED_ROLE");
+        }
+
+        // If ALL allow assignments for this permission are scoped to OTHER resources, deny immediately!
+        var hasUnscopedAllow = allows.Any(a => string.IsNullOrWhiteSpace(a.ResourceScopeType));
+        if (!hasUnscopedAllow)
+        {
+            return new AuthorizationDecision(false, "RESOURCE_SCOPE_DENIED");
+        }
+
+        // For Tenant-scoped organizational targets (LegalEntity / Branch / OrganizationUnit),
+        // enforce Organization hierarchy isolation when user has explicit organizational assignments and is not an org-wide manager!
+        if (!request.IsPlatformScope && request.TenantId.HasValue && Guid.TryParse(request.ScopeId, out var targetOrgGuid))
+        {
+            var isOrgScopeCheck = request.ScopeType.Equals("Branch", StringComparison.OrdinalIgnoreCase)
+                                  || request.ScopeType.Equals("LegalEntity", StringComparison.OrdinalIgnoreCase)
+                                  || request.ScopeType.Equals("OrganizationUnit", StringComparison.OrdinalIgnoreCase);
+
+            if (isOrgScopeCheck)
+            {
+                var isTenantWideOrgManager = assignments.Any(ur =>
+                    ur.Effect == AuthorizationEffect.Allow &&
+                    string.IsNullOrWhiteSpace(ur.ResourceScopeType) &&
+                    ur.Role?.RolePermissions.Any(rp => rp.Permission?.Code == Permissions.OrganizationsManage) == true);
+
+                if (!isTenantWideOrgManager)
+                {
+                    var effectiveOrg = await orgScopeReader.GetEffectiveScopeAsync(request.UserId, request.TenantId.Value, ct);
+                    var hasAnyAssignment = effectiveOrg.BranchIds.Count > 0 || effectiveOrg.OrganizationUnitIds.Count > 0;
+                    if (hasAnyAssignment)
+                    {
+                        var inScope = request.ScopeType.ToLowerInvariant() switch
+                        {
+                            "branch" => effectiveOrg.BranchIds.Contains(targetOrgGuid),
+                            "legalentity" => effectiveOrg.LegalEntityIds.Contains(targetOrgGuid),
+                            "organizationunit" => effectiveOrg.OrganizationUnitIds.Contains(targetOrgGuid),
+                            _ => false
+                        };
+
+                        if (!inScope)
+                        {
+                            return new AuthorizationDecision(false, "ORGANIZATION_SCOPE_DENIED");
+                        }
+                    }
+                }
+            }
+        }
+
+        return new AuthorizationDecision(true, "ALLOWED_BY_TENANT_ROLE");
+    }
+
+    private static bool ScopeMatches(UserRole assignment, string? reqScopeType, string? reqScopeId)
+    {
+        if (string.IsNullOrWhiteSpace(assignment.ResourceScopeType))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(reqScopeType))
+        {
+            return false;
+        }
+
+        if (!string.Equals(assignment.ResourceScopeType, reqScopeType.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(assignment.ResourceScopeId))
+        {
+            return true;
+        }
+
+        return string.Equals(assignment.ResourceScopeId, reqScopeId?.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task AssignRoleByNameAsync(Guid userId, Guid? tenantId, string roleName, CancellationToken ct = default)
@@ -441,12 +694,17 @@ public sealed class AccessControlService(
 
         var targetTenantId = role.Scope == RoleScopeType.Platform ? null : tenantId;
         var exists = await db.UserRoles.AsNoTracking()
-            .AnyAsync(ur => ur.UserId == userId && ur.RoleId == role.Id && ur.TenantId == targetTenantId, ct);
+            .AnyAsync(ur => ur.UserId == userId
+                            && ur.RoleId == role.Id
+                            && ur.TenantId == targetTenantId
+                            && ur.ResourceScopeType == null
+                            && ur.Effect == AuthorizationEffect.Allow, ct);
 
         if (!exists)
         {
             db.UserRoles.Add(UserRole.Assign(userId, role.Id, targetTenantId));
             await db.SaveChangesAsync(ct);
+            await InvalidateUserPermissionCacheAsync(userId, targetTenantId, ct);
         }
     }
 }

@@ -306,6 +306,168 @@ export interface WebhookDto {
   eventType: string;
   targetUrl: string;
   isActive: boolean;
+  description?: string | null;
+  secretVersion?: number;
+  secretPrefix?: string | null;
+  secretRotatedAt?: string | null;
+}
+
+export interface WebhookSecretRotationDto {
+  webhook: WebhookDto;
+  signingSecret: string;
+}
+
+export interface WebhookDeliveryDto {
+  id: string;
+  tenantId: string;
+  webhookId: string;
+  eventId: string;
+  eventType: string;
+  status: string;
+  attemptCount: number;
+  httpStatusCode: number | null;
+  timestampUnix: number;
+  signatureDigestPrefix: string | null;
+  failureReason: string | null;
+  attemptedAt: string;
+  completedAt: string | null;
+}
+
+// === API Clients & Scoped API Keys ===
+export interface ServiceClientDto {
+  id: string;
+  clientId: string;
+  name: string;
+  applicationCode: string | null;
+  tenantId: string | null;
+  secretPrefix: string;
+  allowedScopes: string[];
+  rateLimitPerMinute: number;
+  isActive: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
+  secretRotatedAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface ServiceClientWithSecretDto {
+  client: ServiceClientDto;
+  clientSecret: string;
+}
+
+export interface ApiKeyDto {
+  id: string;
+  name: string;
+  tenantId: string | null;
+  keyPrefix: string;
+  allowedScopes: string[];
+  expiresAt: string | null;
+  isActive: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface ApiKeyWithSecretDto {
+  apiKey: ApiKeyDto;
+  rawApiKey: string;
+}
+
+// === Operations (Outbox, Inbox, Dead Letters, Background Jobs) ===
+export interface OutboxMessageDto {
+  id: string;
+  eventId: string;
+  eventType: string;
+  producer: string;
+  tenantId: string | null;
+  correlationId: string;
+  causationId: string | null;
+  schemaVersion: number;
+  status: string;
+  retryCount: number;
+  occurredAt: string;
+  createdAt: string;
+  processedAt: string | null;
+  nextAttemptAt: string;
+  lastError: string | null;
+}
+
+export interface InboxMessageDto {
+  id: string;
+  eventId: string;
+  consumerName: string;
+  eventType: string;
+  tenantId: string | null;
+  processedAt: string;
+}
+
+export interface DeadLetterMessageDto {
+  id: string;
+  eventId: string;
+  eventType: string;
+  producer: string;
+  tenantId: string | null;
+  correlationId: string;
+  causationId: string | null;
+  reason: string;
+  retryCount: number;
+  manualRetryCount: number;
+  maxManualRetries: number;
+  lastRetriedByUserId: string | null;
+  lastRetriedAt: string | null;
+  retryHistoryJson: string | null;
+  isResolved: boolean;
+  failedAt: string;
+}
+
+export interface BackgroundJobStatusDto {
+  jobName: string;
+  status: string;
+  lastRunStartedAt: string | null;
+  lastRunCompletedAt: string | null;
+  totalRuns: number;
+  totalItemsProcessed: number;
+  totalFailures: number;
+  lastError: string | null;
+}
+
+// === Ecosystem Application Registry & Entitlements ===
+export interface RegisteredApplicationDto {
+  id: string;
+  code: string;
+  name: string;
+  description: string;
+  currentVersion: string;
+  releaseChannel: string;
+  status: string;
+  minPlatformVersion: string;
+  requiredCapabilities: string[];
+  moduleDependencies: string[];
+  compatibilityMetadataJson: string | null;
+}
+
+export interface TenantApplicationDto {
+  applicationCode: string;
+  applicationName: string;
+  currentVersion: string;
+  registryStatus: string;
+  isEntitled: boolean;
+  isActivated: boolean;
+  entitlementReason: string | null;
+  activatedAt: string | null;
+  deactivatedAt: string | null;
+}
+
+export interface EntitlementEvaluationDto {
+  tenantId: string;
+  featureCode: string;
+  isEntitled: boolean;
+  quotaLimit: number | null;
+  currentUsage: number;
+  subscriptionStatus: string;
+  featureFlagOverride: boolean | null;
+  expiresAt: string | null;
+  reason: string;
 }
 
 // === Notifications ===

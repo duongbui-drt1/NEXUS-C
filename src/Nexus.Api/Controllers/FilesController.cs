@@ -14,7 +14,7 @@ public sealed class FilesController(IFileStorageService fileService) : Controlle
     [HttpPost]
     [RequirePermission(Permissions.FilesUpload)]
     [RequestSizeLimit(30_000_000)]
-    public async Task<IActionResult> Upload(IFormFile? file, [FromForm] string category = "General", CancellationToken ct = default)
+    public async Task<IActionResult> Upload(IFormFile? file, [FromForm] string category = "General", [FromForm] int? retentionDays = null, CancellationToken ct = default)
     {
         if (file is null || file.Length == 0)
         {
@@ -22,7 +22,7 @@ public sealed class FilesController(IFileStorageService fileService) : Controlle
         }
 
         await using var stream = file.OpenReadStream();
-        var result = await fileService.UploadAsync(file.FileName, file.ContentType, stream, file.Length, category, ct);
+        var result = await fileService.UploadAsync(file.FileName, file.ContentType, stream, file.Length, category, retentionDays, ct);
         return result.ToActionResult(HttpContext, StatusCodes.Status201Created);
     }
 

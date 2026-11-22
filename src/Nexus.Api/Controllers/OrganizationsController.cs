@@ -79,4 +79,19 @@ public sealed class OrganizationsController(IOrganizationService orgService) : C
     [RequirePermission(Permissions.OrganizationsManage)]
     public async Task<IActionResult> AssignUser([FromBody] AssignUserOrganizationRequest request, CancellationToken ct)
         => (await orgService.AssignUserAsync(request, ct)).ToActionResult(HttpContext, StatusCodes.Status201Created);
+
+    [HttpGet("assignments")]
+    [RequirePermission(Permissions.OrganizationsRead)]
+    public async Task<IActionResult> ListAssignments([FromQuery] Guid? userId = null, [FromQuery] bool includeInactive = false, CancellationToken ct = default)
+        => (await orgService.ListAssignmentsAsync(userId, includeInactive, ct)).ToActionResult(HttpContext);
+
+    [HttpDelete("assignments/{assignmentId:guid}")]
+    [RequirePermission(Permissions.OrganizationsManage)]
+    public async Task<IActionResult> RevokeAssignment(Guid assignmentId, CancellationToken ct)
+        => (await orgService.RevokeAssignmentAsync(assignmentId, ct)).ToActionResult(HttpContext);
+
+    [HttpGet("users/{userId:guid}/scope")]
+    [RequirePermission(Permissions.OrganizationsRead)]
+    public async Task<IActionResult> GetUserEffectiveScope(Guid userId, CancellationToken ct)
+        => (await orgService.GetUserEffectiveScopeAsync(userId, ct)).ToActionResult(HttpContext);
 }

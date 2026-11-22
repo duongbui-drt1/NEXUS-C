@@ -29,6 +29,10 @@ namespace Nexus.Modules.AccessControl.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("CausationId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
                     b.Property<string>("CorrelationId")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -61,6 +65,13 @@ namespace Nexus.Modules.AccessControl.Infrastructure.Migrations
 
                     b.Property<DateTimeOffset?>("ProcessedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Producer")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasDefaultValue("nexus-c");
 
                     b.Property<int>("RetryCount")
                         .HasColumnType("integer");
@@ -203,6 +214,13 @@ namespace Nexus.Modules.AccessControl.Infrastructure.Migrations
                     b.Property<Guid?>("CreatedBy")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("Effect")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Allow");
+
                     b.Property<string>("ResourceScopeId")
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
@@ -238,7 +256,7 @@ namespace Nexus.Modules.AccessControl.Infrastructure.Migrations
 
                     b.HasIndex("UserId", "TenantId");
 
-                    b.HasIndex("UserId", "RoleId", "TenantId")
+                    b.HasIndex("UserId", "RoleId", "TenantId", "ResourceScopeType", "ResourceScopeId", "Effect")
                         .IsUnique();
 
                     b.ToTable("user_roles", "access_control");

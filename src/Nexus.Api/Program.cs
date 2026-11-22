@@ -1,4 +1,7 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Nexus.Bootstrap;
 using Nexus.BuildingBlocks.Web;
 using Scalar.AspNetCore;
@@ -9,12 +12,19 @@ var builder = WebApplication.CreateBuilder(args);
 builder.AddNexusObservability();
 builder.Services.AddNexusFoundationCore(builder.Configuration, builder.Environment.EnvironmentName);
 
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.ForwardLimit = 2;
+});
+
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi("v1");
 
 var app = builder.Build();
 
+app.UseForwardedHeaders();
 app.UseExceptionHandler();
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseMiddleware<SecurityHeadersMiddleware>();
@@ -45,6 +55,30 @@ app.MapHealthChecks("/health/live", new HealthCheckOptions
 app.MapHealthChecks("/health/ready", new HealthCheckOptions
 {
     Predicate = check => check.Tags.Contains("ready")
+}).AllowAnonymous();
+
+// Dependency health endpoint returning strictly sanitized status without leaking credentials or connection strings
+app.MapHealthChecks("/health/dependencies", new HealthCheckOptions
+{
+    Predicate = _ => true,
+    ResponseWriter = static async (context, report) =>
+    {
+        context.Response.ContentType = "application/json; charset=utf-8";
+        var payload = new
+        {
+            status = report.Status.ToString(),
+            checkedAt = DateTimeOffset.UtcNow,
+            totalDurationMs = Math.Round(report.TotalDuration.TotalMilliseconds, 2),
+            checks = report.Entries.Select(e => new
+            {
+                name = e.Key,
+                status = e.Value.Status.ToString(),
+                durationMs = Math.Round(e.Value.Duration.TotalMilliseconds, 2),
+                tags = e.Value.Tags
+            })
+        };
+        await context.Response.WriteAsync(JsonSerializer.Serialize(payload));
+    }
 }).AllowAnonymous();
 
 app.MapControllers();

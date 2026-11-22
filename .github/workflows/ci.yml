@@ -2,7 +2,7 @@ name: NEXUS Foundation CI
 
 on:
   push:
-    branches: [ main, develop, 'fix/**' ]
+    branches: [ main, develop, 'fix/**', 'release/**' ]
   pull_request:
     branches: [ main, develop ]
 
@@ -81,3 +81,18 @@ jobs:
 
       - name: Production static build
         run: npm run build
+
+  docker-build-verify:
+    name: Docker Image Builds (API, Migrator, Console)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Nexus.Api image
+        run: docker build -f Dockerfile -t nexus-c-api:ci .
+
+      - name: Build Nexus.Migrator image
+        run: docker build -f Dockerfile.migrator -t nexus-c-migrator:ci .
+
+      - name: Build NEXUS C Console image
+        run: docker build -f nexus-c-console/Dockerfile -t nexus-c-console:ci nexus-c-console

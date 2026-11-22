@@ -26,8 +26,13 @@ public sealed class ConfigurationController(IConfigurationService configService)
 
     [HttpGet("global")]
     [RequirePermission(Permissions.ConfigurationRead)]
-    public async Task<IActionResult> ListPlatformSettings(CancellationToken ct)
-        => (await configService.ListPlatformSettingsAsync(ct)).ToActionResult(HttpContext);
+    public async Task<IActionResult> ListPlatformSettings([FromQuery] string? category = null, CancellationToken ct = default)
+        => (await configService.ListPlatformSettingsAsync(category, ct)).ToActionResult(HttpContext);
+
+    [HttpGet("history")]
+    [RequirePermission(Permissions.ConfigurationRead)]
+    public async Task<IActionResult> ListHistory([FromQuery] string? key = null, CancellationToken ct = default)
+        => (await configService.ListHistoryAsync(key, ct)).ToActionResult(HttpContext);
 
     [HttpPut("feature-flags")]
     [RequirePermission(Permissions.ConfigurationManage)]

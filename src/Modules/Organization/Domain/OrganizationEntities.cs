@@ -140,6 +140,7 @@ public sealed class OrganizationUnit : TenantScopedEntity
     public string Code { get; private set; } = string.Empty;
     public string Name { get; private set; } = string.Empty;
     public OrganizationUnitType UnitType { get; private set; }
+    public OrganizationStatus Status { get; private set; } = OrganizationStatus.Active;
 
     public static Result<OrganizationUnit> Create(Guid tenantId, Guid? parentId, string code, string name, OrganizationUnitType unitType)
     {
@@ -164,13 +165,14 @@ public sealed class OrganizationUnit : TenantScopedEntity
             ParentId = parentId,
             Code = code.Trim().ToUpperInvariant(),
             Name = name.Trim(),
-            UnitType = unitType
+            UnitType = unitType,
+            Status = OrganizationStatus.Active
         };
         unit.AssignTenant(tenantId);
         return unit;
     }
 
-    public Result Update(Guid? parentId, string name, OrganizationUnitType unitType)
+    public Result Update(Guid? parentId, string name, OrganizationUnitType unitType, OrganizationStatus status = OrganizationStatus.Active)
     {
         if (parentId.HasValue && parentId.Value == Id)
         {
@@ -185,6 +187,7 @@ public sealed class OrganizationUnit : TenantScopedEntity
         ParentId = parentId;
         Name = name.Trim();
         UnitType = unitType;
+        Status = status;
         return Result.Success();
     }
 }
@@ -198,8 +201,19 @@ public sealed class UserOrganizationAssignment : TenantScopedEntity
     public Guid? OrganizationUnitId { get; private set; }
     public string? Title { get; private set; }
     public bool IsPrimary { get; private set; }
+    public bool IsActive { get; private set; } = true;
+    public DateTimeOffset EffectiveFrom { get; private set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? EffectiveTo { get; private set; }
 
-    public static UserOrganizationAssignment Create(Guid tenantId, Guid userId, Guid? branchId, Guid? orgUnitId, string? title, bool isPrimary)
+    public static UserOrganizationAssignment Create(
+        Guid tenantId,
+        Guid userId,
+        Guid? branchId,
+        Guid? orgUnitId,
+        string? title,
+        bool isPrimary,
+        DateTimeOffset? effectiveFrom = null,
+        DateTimeOffset? effectiveTo = null)
     {
         var assignment = new UserOrganizationAssignment
         {
@@ -208,9 +222,21 @@ public sealed class UserOrganizationAssignment : TenantScopedEntity
             BranchId = branchId,
             OrganizationUnitId = orgUnitId,
             Title = string.IsNullOrWhiteSpace(title) ? null : title.Trim(),
-            IsPrimary = isPrimary
+            IsPrimary = isPrimary,
+            IsActive = true,
+            EffectiveFrom = effectiveFrom ?? DateTimeOffset.UtcNow,
+            EffectiveTo = effectiveTo
         };
         assignment.AssignTenant(tenantId);
         return assignment;
     }
+
+    public void Deactivate(DateTimeOffset utcNow)
+    {
+        IsActive = false;
+        EffectiveTo = utcNow;
+    }
+
+    public bool IsEffectiveAt(DateTimeOffset utcNow)
+        => IsActive && EffectiveFrom <= utcNow && (!EffectiveTo.HasValue || EffectiveTo.Value > utcNow);
 }

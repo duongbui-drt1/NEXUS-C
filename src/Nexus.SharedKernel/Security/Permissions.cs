@@ -16,6 +16,10 @@ public static class Permissions
     public const string TenantsSuspend = "platform.tenants.suspend";
     public const string MembershipsManageCrossTenant = "platform.memberships.manage";
 
+    // Application Registry & Ecosystem
+    public const string ApplicationsRead = "platform.applications.read";
+    public const string ApplicationsManage = "platform.applications.manage";
+
     // API Management & Platform Operations
     public const string ApiRead = "platform.api.read";
     public const string ApiManage = "platform.api.manage";
@@ -46,7 +50,7 @@ public static class Permissions
     public const string WorkflowsApprove = "platform.workflows.approve";
     public const string WorkflowsManage = "platform.workflows.manage";
 
-    // Subscriptions
+    // Subscriptions & Entitlements
     public const string SubscriptionsRead = "platform.subscriptions.read";
     public const string SubscriptionsManage = "platform.subscriptions.manage";
 
@@ -78,9 +82,12 @@ public static class Permissions
         (TenantsSuspend, "Suspend/Activate Tenants", PermissionScope.Platform, "Tenancy"),
         (MembershipsManageCrossTenant, "Manage Cross-Tenant Memberships", PermissionScope.Platform, "Tenancy"),
 
-        (ApiRead, "Read API Specifications & Gateway Overview", PermissionScope.Both, "ApiManagement"),
+        (ApplicationsRead, "Read Ecosystem Application Registry & Tenant Activations", PermissionScope.Both, "Applications"),
+        (ApplicationsManage, "Manage Application Registry & Tenant Activations", PermissionScope.Platform, "Applications"),
+
+        (ApiRead, "Read API Specifications, Service Clients & Keys", PermissionScope.Both, "ApiManagement"),
         (ApiManage, "Manage API Clients, Keys & Policies", PermissionScope.Platform, "ApiManagement"),
-        (OperationsRead, "Read Operations Health & Event Queues", PermissionScope.Platform, "Operations"),
+        (OperationsRead, "Read Operations Health, Jobs & Event Queues", PermissionScope.Platform, "Operations"),
         (OperationsManage, "Manage Background Jobs & Dead Letters", PermissionScope.Platform, "Operations"),
 
         (OrganizationsRead, "Read Organization Structure", PermissionScope.Tenant, "Organization"),
@@ -109,7 +116,7 @@ public static class Permissions
         (ConfigurationManage, "Manage Tenant Configuration & Flags", PermissionScope.Tenant, "Configuration"),
         (PlatformConfigurationManage, "Manage Global Platform Configuration", PermissionScope.Platform, "Configuration"),
 
-        (IntegrationsRead, "Read Integrations", PermissionScope.Tenant, "Integration"),
+        (IntegrationsRead, "Read Integrations & Webhooks", PermissionScope.Tenant, "Integration"),
         (IntegrationsManage, "Manage Integrations & Webhooks", PermissionScope.Tenant, "Integration"),
         (AiGatewayInvoke, "Invoke AI Gateway", PermissionScope.Tenant, "AI"),
         (AiGatewayManage, "Manage AI Gateway Models", PermissionScope.Platform, "AI"),

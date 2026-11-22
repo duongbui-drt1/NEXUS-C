@@ -57,6 +57,7 @@ public sealed class OrganizationDbContext(
             builder.Property(x => x.Code).HasMaxLength(32).IsRequired();
             builder.Property(x => x.Name).HasMaxLength(200).IsRequired();
             builder.Property(x => x.UnitType).HasConversion<string>().HasMaxLength(32).IsRequired();
+            builder.Property(x => x.Status).HasConversion<string>().HasMaxLength(32).HasDefaultValue(OrganizationStatus.Active).IsRequired();
             builder.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
             builder.HasIndex(x => x.TenantId);
             builder.HasOne<OrganizationUnit>()
@@ -70,6 +71,7 @@ public sealed class OrganizationDbContext(
             builder.ToTable("user_organization_assignments", SchemaName);
             builder.HasKey(x => x.Id);
             builder.Property(x => x.Title).HasMaxLength(150);
+            builder.Property(x => x.IsActive).HasDefaultValue(true).IsRequired();
             builder.HasIndex(x => new { x.TenantId, x.UserId });
             builder.HasOne<Branch>()
                 .WithMany()

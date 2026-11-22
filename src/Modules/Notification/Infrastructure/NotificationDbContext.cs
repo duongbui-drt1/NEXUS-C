@@ -16,6 +16,7 @@ public sealed class NotificationDbContext(
 
     public DbSet<NotificationTemplate> Templates => Set<NotificationTemplate>();
     public DbSet<NotificationMessage> Messages => Set<NotificationMessage>();
+    public DbSet<NotificationPreference> Preferences => Set<NotificationPreference>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -34,11 +35,20 @@ public sealed class NotificationDbContext(
             e.ToTable("notifications", SchemaName);
             e.HasKey(x => x.Id);
             e.Property(x => x.RecipientEmail).HasMaxLength(256);
+            e.Property(x => x.WebhookUrl).HasMaxLength(500);
             e.Property(x => x.Channel).HasConversion<string>().HasMaxLength(32).IsRequired();
             e.Property(x => x.Subject).HasMaxLength(300).IsRequired();
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32).IsRequired();
             e.Property(x => x.LastError).HasMaxLength(1000);
             e.HasIndex(x => new { x.TenantId, x.RecipientUserId, x.IsRead });
+        });
+
+        modelBuilder.Entity<NotificationPreference>(e =>
+        {
+            e.ToTable("preferences", SchemaName);
+            e.HasKey(x => x.Id);
+            e.Property(x => x.DigestFrequency).HasMaxLength(32).IsRequired();
+            e.HasIndex(x => new { x.TenantId, x.UserId }).IsUnique();
         });
 
         base.OnModelCreating(modelBuilder);

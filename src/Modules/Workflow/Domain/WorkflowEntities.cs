@@ -22,6 +22,12 @@ public enum ApprovalTaskStatus
     Expired = 5
 }
 
+public enum ApprovalMode
+{
+    Sequential = 1,
+    Parallel = 2
+}
+
 public sealed class WorkflowDefinition : TenantScopedEntity
 {
     private WorkflowDefinition() { }
@@ -55,6 +61,8 @@ public sealed class WorkflowDefinition : TenantScopedEntity
     }
 
     public int IncrementVersion() => ++CurrentVersionNumber;
+    public void Activate() => IsActive = true;
+    public void Deactivate() => IsActive = false;
 }
 
 public sealed class WorkflowVersion : TenantScopedEntity
@@ -66,8 +74,24 @@ public sealed class WorkflowVersion : TenantScopedEntity
     public int RequiredApprovals { get; private set; } = 1;
     public string? ApproverRoleName { get; private set; }
     public int ExpirationHours { get; private set; } = 72;
+    public bool RequireMakerChecker { get; private set; } = true;
+    public ApprovalMode ApprovalMode { get; private set; } = ApprovalMode.Sequential;
+    public string? ConditionExpressionJson { get; private set; }
+    public int? EscalationHours { get; private set; }
+    public string? EscalationRoleName { get; private set; }
 
-    public static WorkflowVersion Create(Guid tenantId, Guid definitionId, int versionNumber, int requiredApprovals, string? approverRoleName, int expirationHours)
+    public static WorkflowVersion Create(
+        Guid tenantId,
+        Guid definitionId,
+        int versionNumber,
+        int requiredApprovals,
+        string? approverRoleName,
+        int expirationHours,
+        bool requireMakerChecker = true,
+        ApprovalMode approvalMode = ApprovalMode.Sequential,
+        string? conditionExpressionJson = null,
+        int? escalationHours = null,
+        string? escalationRoleName = null)
     {
         var ver = new WorkflowVersion
         {
@@ -76,7 +100,12 @@ public sealed class WorkflowVersion : TenantScopedEntity
             VersionNumber = versionNumber,
             RequiredApprovals = Math.Max(1, requiredApprovals),
             ApproverRoleName = string.IsNullOrWhiteSpace(approverRoleName) ? null : approverRoleName.Trim(),
-            ExpirationHours = Math.Clamp(expirationHours, 1, 720)
+            ExpirationHours = Math.Clamp(expirationHours, 1, 720),
+            RequireMakerChecker = requireMakerChecker,
+            ApprovalMode = approvalMode,
+            ConditionExpressionJson = string.IsNullOrWhiteSpace(conditionExpressionJson) ? null : conditionExpressionJson.Trim(),
+            EscalationHours = escalationHours.HasValue ? Math.Clamp(escalationHours.Value, 1, 720) : null,
+            EscalationRoleName = string.IsNullOrWhiteSpace(escalationRoleName) ? null : escalationRoleName.Trim()
         };
         ver.AssignTenant(tenantId);
         return ver;
@@ -191,11 +220,21 @@ public sealed class ApprovalTask : TenantScopedEntity
     public Guid WorkflowInstanceId { get; private set; }
     public int StepOrder { get; private set; }
     public string? AssignedRoleName { get; private set; }
+    public Guid? AssignedUserId { get; private set; }
+    public Guid? DelegatedFromUserId { get; private set; }
     public ApprovalTaskStatus Status { get; private set; } = ApprovalTaskStatus.Pending;
+    public DateTimeOffset? SlaDueAt { get; private set; }
+    public DateTimeOffset? EscalatedAt { get; private set; }
+    public string? EscalatedToRoleName { get; private set; }
     public DateTimeOffset? DecidedAt { get; private set; }
     public Guid? DecidedByUserId { get; private set; }
 
-    public static ApprovalTask Create(Guid tenantId, Guid instanceId, int stepOrder, string? assignedRoleName)
+    public static ApprovalTask Create(
+        Guid tenantId,
+        Guid instanceId,
+        int stepOrder,
+        string? assignedRoleName,
+        DateTimeOffset? slaDueAt = null)
     {
         var task = new ApprovalTask
         {
@@ -203,7 +242,8 @@ public sealed class ApprovalTask : TenantScopedEntity
             WorkflowInstanceId = instanceId,
             StepOrder = stepOrder,
             AssignedRoleName = assignedRoleName,
-            Status = ApprovalTaskStatus.Pending
+            Status = ApprovalTaskStatus.Pending,
+            SlaDueAt = slaDueAt
         };
         task.AssignTenant(tenantId);
         return task;
@@ -222,6 +262,30 @@ public sealed class ApprovalTask : TenantScopedEntity
         return Result.Success();
     }
 
+    public Result Delegate(Guid targetUserId, Guid fromUserId)
+    {
+        if (Status != ApprovalTaskStatus.Pending)
+        {
+            return Result.Failure(Error.Conflict("WORKFLOW_TASK_NOT_PENDING", "Only pending approval tasks can be delegated."));
+        }
+
+        DelegatedFromUserId = fromUserId;
+        AssignedUserId = targetUserId;
+        return Result.Success();
+    }
+
+    public void Escalate(string? escalationRoleName, DateTimeOffset utcNow)
+    {
+        if (Status == ApprovalTaskStatus.Pending && !EscalatedAt.HasValue)
+        {
+            EscalatedAt = utcNow;
+            if (!string.IsNullOrWhiteSpace(escalationRoleName))
+            {
+                EscalatedToRoleName = escalationRoleName.Trim();
+            }
+        }
+    }
+
     public void Cancel()
     {
         if (Status == ApprovalTaskStatus.Pending)
@@ -229,6 +293,64 @@ public sealed class ApprovalTask : TenantScopedEntity
             Status = ApprovalTaskStatus.Cancelled;
         }
     }
+
+    public void Expire()
+    {
+        if (Status == ApprovalTaskStatus.Pending)
+        {
+            Status = ApprovalTaskStatus.Expired;
+        }
+    }
+}
+
+public sealed class ApprovalDelegation : TenantScopedEntity
+{
+    private ApprovalDelegation() { }
+
+    public Guid DelegatorUserId { get; private set; }
+    public Guid DelegateUserId { get; private set; }
+    public Guid? WorkflowDefinitionId { get; private set; }
+    public DateTimeOffset ValidFrom { get; private set; }
+    public DateTimeOffset ValidTo { get; private set; }
+    public bool IsActive { get; private set; } = true;
+    public string? Reason { get; private set; }
+
+    public static Result<ApprovalDelegation> Create(
+        Guid tenantId,
+        Guid delegatorUserId,
+        Guid delegateUserId,
+        Guid? workflowDefinitionId,
+        DateTimeOffset validFrom,
+        DateTimeOffset validTo,
+        string? reason)
+    {
+        if (delegatorUserId == delegateUserId)
+        {
+            return Error.Validation("WORKFLOW_SELF_DELEGATION", "A user cannot delegate approvals to themselves.");
+        }
+
+        if (validTo <= validFrom)
+        {
+            return Error.Validation("WORKFLOW_INVALID_DELEGATION_WINDOW", "Delegation ValidTo must be after ValidFrom.");
+        }
+
+        var d = new ApprovalDelegation
+        {
+            Id = Guid.CreateVersion7(),
+            DelegatorUserId = delegatorUserId,
+            DelegateUserId = delegateUserId,
+            WorkflowDefinitionId = workflowDefinitionId,
+            ValidFrom = validFrom,
+            ValidTo = validTo,
+            IsActive = true,
+            Reason = reason?.Length > 500 ? reason[..500] : reason
+        };
+        d.AssignTenant(tenantId);
+        return d;
+    }
+
+    public bool IsEffectiveAt(DateTimeOffset utcNow) => IsActive && ValidFrom <= utcNow && ValidTo > utcNow;
+    public void Revoke() => IsActive = false;
 }
 
 public sealed class ApprovalDecision : TenantScopedEntity

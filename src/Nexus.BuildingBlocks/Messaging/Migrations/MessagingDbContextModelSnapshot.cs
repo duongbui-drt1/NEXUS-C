@@ -29,6 +29,10 @@ namespace Nexus.BuildingBlocks.Messaging.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("CausationId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
                     b.Property<string>("CorrelationId")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -45,9 +49,28 @@ namespace Nexus.BuildingBlocks.Messaging.Migrations
                     b.Property<DateTimeOffset>("FailedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool>("IsResolved")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset?>("LastRetriedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("LastRetriedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("ManualRetryCount")
+                        .HasColumnType("integer");
+
                     b.Property<string>("PayloadJson")
                         .IsRequired()
                         .HasColumnType("jsonb");
+
+                    b.Property<string>("Producer")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasDefaultValue("nexus-c");
 
                     b.Property<string>("Reason")
                         .IsRequired()
@@ -57,12 +80,17 @@ namespace Nexus.BuildingBlocks.Messaging.Migrations
                     b.Property<int>("RetryCount")
                         .HasColumnType("integer");
 
+                    b.Property<string>("RetryHistoryJson")
+                        .HasColumnType("jsonb");
+
                     b.Property<Guid?>("TenantId")
                         .HasColumnType("uuid");
 
                     b.HasKey("Id");
 
                     b.HasIndex("FailedAt");
+
+                    b.HasIndex("IsResolved");
 
                     b.ToTable("dead_letter_messages", "messaging");
                 });
@@ -161,6 +189,10 @@ namespace Nexus.BuildingBlocks.Messaging.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("CausationId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
                     b.Property<string>("CorrelationId")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -193,6 +225,13 @@ namespace Nexus.BuildingBlocks.Messaging.Migrations
 
                     b.Property<DateTimeOffset?>("ProcessedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Producer")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasDefaultValue("nexus-c");
 
                     b.Property<int>("RetryCount")
                         .HasColumnType("integer");

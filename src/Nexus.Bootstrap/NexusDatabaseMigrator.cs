@@ -12,6 +12,7 @@ using Nexus.Modules.Identity.Infrastructure;
 using Nexus.Modules.Integration.Infrastructure;
 using Nexus.Modules.Notification.Infrastructure;
 using Nexus.Modules.Organization.Infrastructure;
+using Nexus.Modules.Subscription.Application;
 using Nexus.Modules.Subscription.Infrastructure;
 using Nexus.Modules.Tenancy.Infrastructure;
 using Nexus.Modules.Workflow.Infrastructure;
@@ -23,54 +24,76 @@ namespace Nexus.Bootstrap;
 
 public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILogger<NexusDatabaseMigrator> logger)
 {
+    private const long MigrationAdvisoryLockKey = 74839210L;
+
     public async Task MigrateAndHardeningAsync(string migrationConnectionString, string appRoleName = "nexus_app", CancellationToken ct = default)
     {
-        logger.LogInformation("Applying NEXUS C Foundation EF Core migrations across all schemas...");
+        logger.LogInformation("Acquiring PostgreSQL advisory lock ({LockKey}) for NEXUS C Foundation migration...", MigrationAdvisoryLockKey);
 
-        // Ensure all module schemas exist before running migrations
-        string[] schemas =
-        [
-            "messaging", "tenancy", "organization", "identity", "access_control",
-            "audit", "workflow", "subscription", "configuration", "integration",
-            "notification", "file_storage"
-        ];
-
-        await using (var conn = new NpgsqlConnection(migrationConnectionString))
+        await using var lockConn = new NpgsqlConnection(migrationConnectionString);
+        await lockConn.OpenAsync(ct);
+        await using (var lockCmd = new NpgsqlCommand($"SELECT pg_advisory_lock({MigrationAdvisoryLockKey});", lockConn))
         {
-            await conn.OpenAsync(ct);
-            foreach (var schema in schemas)
-            {
-                await using var cmd = new NpgsqlCommand($"CREATE SCHEMA IF NOT EXISTS \"{schema}\";", conn);
-                await cmd.ExecuteNonQueryAsync(ct);
-            }
+            await lockCmd.ExecuteNonQueryAsync(ct);
         }
 
-        // Run EF Core migrations for every DbContext using the migration connection string (owner role)
-        await using var scope = serviceProvider.CreateAsyncScope();
-        var tenantCtx = scope.ServiceProvider.GetRequiredService<ITenantContext>();
-        using var bypass = tenantCtx.BeginScope(null, platformBypass: true, bypassReason: "database-migration");
+        try
+        {
+            logger.LogInformation("Applying NEXUS C Foundation EF Core migrations across all schemas...");
 
-        await MigrateContextAsync<MessagingDbContext>(migrationConnectionString, "messaging", scope.ServiceProvider, ct);
-        await MigrateContextAsync<TenancyDbContext>(migrationConnectionString, "tenancy", scope.ServiceProvider, ct);
-        await MigrateContextAsync<OrganizationDbContext>(migrationConnectionString, "organization", scope.ServiceProvider, ct);
-        await MigrateContextAsync<IdentityModuleDbContext>(migrationConnectionString, "identity", scope.ServiceProvider, ct);
-        await MigrateContextAsync<AccessControlDbContext>(migrationConnectionString, "access_control", scope.ServiceProvider, ct);
-        await MigrateContextAsync<AuditDbContext>(migrationConnectionString, "audit", scope.ServiceProvider, ct);
-        await MigrateContextAsync<WorkflowDbContext>(migrationConnectionString, "workflow", scope.ServiceProvider, ct);
-        await MigrateContextAsync<SubscriptionDbContext>(migrationConnectionString, "subscription", scope.ServiceProvider, ct);
-        await MigrateContextAsync<ConfigurationDbContext>(migrationConnectionString, "configuration", scope.ServiceProvider, ct);
-        await MigrateContextAsync<IntegrationDbContext>(migrationConnectionString, "integration", scope.ServiceProvider, ct);
-        await MigrateContextAsync<NotificationDbContext>(migrationConnectionString, "notification", scope.ServiceProvider, ct);
-        await MigrateContextAsync<FileStorageDbContext>(migrationConnectionString, "file_storage", scope.ServiceProvider, ct);
+            string[] schemas =
+            [
+                "messaging", "tenancy", "organization", "identity", "access_control",
+                "audit", "workflow", "subscription", "configuration", "integration",
+                "notification", "file_storage"
+            ];
 
-        // Apply PostgreSQL Row-Level Security (FORCE RLS), Audit Immutability Trigger, and least-privilege grants for nexus_app
-        await ApplyRlsAndHardeningSqlAsync(migrationConnectionString, appRoleName, ct);
+            foreach (var schema in schemas)
+            {
+                await using var cmd = new NpgsqlCommand($"CREATE SCHEMA IF NOT EXISTS \"{schema}\";", lockConn);
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
 
-        // Seed default RBAC permissions & roles
-        var accessControl = scope.ServiceProvider.GetRequiredService<IAccessControlService>();
-        await accessControl.SeedDefaultsAsync(ct);
+            await using var scope = serviceProvider.CreateAsyncScope();
+            var tenantCtx = scope.ServiceProvider.GetRequiredService<ITenantContext>();
+            using var bypass = tenantCtx.BeginScope(null, platformBypass: true, bypassReason: "database-migration");
 
-        logger.LogInformation("NEXUS C Foundation migrations, RLS hardening, and RBAC seeding completed successfully.");
+            await MigrateContextAsync<MessagingDbContext>(migrationConnectionString, "messaging", scope.ServiceProvider, ct);
+            await MigrateContextAsync<TenancyDbContext>(migrationConnectionString, "tenancy", scope.ServiceProvider, ct);
+            await MigrateContextAsync<OrganizationDbContext>(migrationConnectionString, "organization", scope.ServiceProvider, ct);
+            await MigrateContextAsync<IdentityModuleDbContext>(migrationConnectionString, "identity", scope.ServiceProvider, ct);
+            await MigrateContextAsync<AccessControlDbContext>(migrationConnectionString, "access_control", scope.ServiceProvider, ct);
+            await MigrateContextAsync<AuditDbContext>(migrationConnectionString, "audit", scope.ServiceProvider, ct);
+            await MigrateContextAsync<WorkflowDbContext>(migrationConnectionString, "workflow", scope.ServiceProvider, ct);
+            await MigrateContextAsync<SubscriptionDbContext>(migrationConnectionString, "subscription", scope.ServiceProvider, ct);
+            await MigrateContextAsync<ConfigurationDbContext>(migrationConnectionString, "configuration", scope.ServiceProvider, ct);
+            await MigrateContextAsync<IntegrationDbContext>(migrationConnectionString, "integration", scope.ServiceProvider, ct);
+            await MigrateContextAsync<NotificationDbContext>(migrationConnectionString, "notification", scope.ServiceProvider, ct);
+            await MigrateContextAsync<FileStorageDbContext>(migrationConnectionString, "file_storage", scope.ServiceProvider, ct);
+
+            await ApplyRlsAndHardeningSqlAsync(migrationConnectionString, appRoleName, ct);
+
+            // Seed default RBAC permissions/roles and NEXUS ecosystem Application Registry
+            var accessControl = scope.ServiceProvider.GetRequiredService<IAccessControlService>();
+            await accessControl.SeedDefaultsAsync(ct);
+
+            var subscriptionService = scope.ServiceProvider.GetRequiredService<ISubscriptionService>();
+            await subscriptionService.SeedApplicationsAsync(ct);
+
+            logger.LogInformation("NEXUS C Foundation migrations, RLS hardening, RBAC & Application Registry seeding completed successfully.");
+        }
+        finally
+        {
+            try
+            {
+                await using var unlockCmd = new NpgsqlCommand($"SELECT pg_advisory_unlock({MigrationAdvisoryLockKey});", lockConn);
+                await unlockCmd.ExecuteNonQueryAsync(CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to explicitly release migration advisory lock; session close will release it.");
+            }
+        }
     }
 
     private static async Task MigrateContextAsync<TContext>(
@@ -106,7 +129,7 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
 
     private static async Task ApplyRlsAndHardeningSqlAsync(string connectionString, string appRoleName, CancellationToken ct)
     {
-        // All strictly tenant-scoped tables enforcing PostgreSQL FORCE ROW LEVEL SECURITY
+        // All 28 strictly tenant-scoped tables enforcing PostgreSQL FORCE ROW LEVEL SECURITY
         (string Schema, string Table)[] rlsTables =
         [
             ("tenancy", "memberships"),
@@ -119,19 +142,23 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
             ("workflow", "instances"),
             ("workflow", "approval_tasks"),
             ("workflow", "approval_decisions"),
+            ("workflow", "approval_delegations"),
             ("workflow", "history"),
             ("subscription", "subscriptions"),
             ("subscription", "subscription_items"),
             ("subscription", "entitlements"),
             ("subscription", "usage_records"),
+            ("subscription", "tenant_applications"),
             ("configuration", "tenant_settings"),
             ("integration", "connections"),
             ("integration", "sync_logs"),
             ("integration", "integration_errors"),
             ("integration", "webhooks"),
+            ("integration", "webhook_deliveries"),
             ("integration", "ai_usage_logs"),
             ("notification", "templates"),
             ("notification", "notifications"),
+            ("notification", "preferences"),
             ("file_storage", "stored_files")
         ];
 
@@ -164,9 +191,9 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
-        // Hybrid RLS policies for tables holding both Global/Platform rows and Tenant-specific rows
+        // Hybrid RLS policies for tables holding both Global/Platform rows and Tenant-specific rows (5 tables -> 33 total FORCE RLS tables!)
         const string hybridRlsSql = @"
-            -- 1. access_control.roles: Tenant scope reads global Tenant system roles + own custom roles; writes ONLY own non-system Tenant roles
+            -- 1. access_control.roles
             ALTER TABLE access_control.roles ENABLE ROW LEVEL SECURITY;
             ALTER TABLE access_control.roles FORCE ROW LEVEL SECURITY;
             DROP POLICY IF EXISTS nexus_roles_select ON access_control.roles;
@@ -208,7 +235,55 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
                 )
             );
 
-            -- 2. access_control.user_roles: Strict tenant isolation (Platform scope accesses all; Tenant scope strictly own TenantId)
+            -- 2. access_control.role_permissions: follows parent role visibility and write ownership!
+            ALTER TABLE access_control.role_permissions ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE access_control.role_permissions FORCE ROW LEVEL SECURITY;
+            DROP POLICY IF EXISTS nexus_role_permissions_select ON access_control.role_permissions;
+            DROP POLICY IF EXISTS nexus_role_permissions_write ON access_control.role_permissions;
+            CREATE POLICY nexus_role_permissions_select ON access_control.role_permissions
+            FOR SELECT USING (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR EXISTS (
+                    SELECT 1 FROM access_control.roles r
+                    WHERE r.""Id"" = ""RoleId""
+                      AND r.""Scope"" = 'Tenant'
+                      AND (
+                          r.""TenantId"" IS NULL
+                          OR (
+                              NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                              AND r.""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                          )
+                      )
+                )
+            );
+            CREATE POLICY nexus_role_permissions_write ON access_control.role_permissions
+            FOR ALL USING (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR EXISTS (
+                    SELECT 1 FROM access_control.roles r
+                    WHERE r.""Id"" = ""RoleId""
+                      AND r.""Scope"" = 'Tenant'
+                      AND r.""IsSystemRole"" = false
+                      AND NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                      AND r.""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
+            )
+            WITH CHECK (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR EXISTS (
+                    SELECT 1 FROM access_control.roles r
+                    WHERE r.""Id"" = ""RoleId""
+                      AND r.""Scope"" = 'Tenant'
+                      AND r.""IsSystemRole"" = false
+                      AND NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                      AND r.""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
+            );
+
+            -- 3. access_control.user_roles
             ALTER TABLE access_control.user_roles ENABLE ROW LEVEL SECURITY;
             ALTER TABLE access_control.user_roles FORCE ROW LEVEL SECURITY;
             DROP POLICY IF EXISTS nexus_user_roles_isolation ON access_control.user_roles;
@@ -230,7 +305,7 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
                 )
             );
 
-            -- 3. configuration.feature_flags: Tenant reads global defaults (TenantId IS NULL) + own overrides; writes ONLY own overrides
+            -- 4. configuration.feature_flags
             ALTER TABLE configuration.feature_flags ENABLE ROW LEVEL SECURITY;
             ALTER TABLE configuration.feature_flags FORCE ROW LEVEL SECURITY;
             DROP POLICY IF EXISTS nexus_feature_flags_select ON configuration.feature_flags;
@@ -260,6 +335,33 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
                 OR (
                     NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
                     AND ""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
+            );
+
+            -- 5. audit.audit_events: Tenant scope reads ONLY own tenant audit logs; Platform scope reads all; append-only INSERT enforced!
+            ALTER TABLE audit.audit_events ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE audit.audit_events FORCE ROW LEVEL SECURITY;
+            DROP POLICY IF EXISTS nexus_audit_select ON audit.audit_events;
+            DROP POLICY IF EXISTS nexus_audit_insert ON audit.audit_events;
+            CREATE POLICY nexus_audit_select ON audit.audit_events
+            FOR SELECT USING (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR (
+                    NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                    AND ""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
+            );
+            CREATE POLICY nexus_audit_insert ON audit.audit_events
+            FOR INSERT WITH CHECK (
+                current_setting('app.bypass_rls', true) = 'on'
+                OR current_setting('app.is_platform_scope', true) = 'on'
+                OR (
+                    NULLIF(current_setting('app.current_tenant_id', true), '') IS NOT NULL
+                    AND ""TenantId"" = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+                )
+                OR (
+                    NULLIF(current_setting('app.current_tenant_id', true), '') IS NULL
                 )
             );";
 
@@ -317,7 +419,6 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
                 await gCmd.ExecuteNonQueryAsync(ct);
             }
 
-            // Audit schema: strictly INSERT and SELECT ONLY for nexus_app (NO UPDATE, NO DELETE!)
             var auditGrantSql = $@"
                 GRANT USAGE ON SCHEMA audit TO ""{appRoleName}"";
                 REVOKE ALL ON TABLE audit.audit_events FROM ""{appRoleName}"";

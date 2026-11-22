@@ -19,6 +19,7 @@ public sealed class WorkflowDbContext(
     public DbSet<WorkflowInstance> Instances => Set<WorkflowInstance>();
     public DbSet<ApprovalTask> ApprovalTasks => Set<ApprovalTask>();
     public DbSet<ApprovalDecision> ApprovalDecisions => Set<ApprovalDecision>();
+    public DbSet<ApprovalDelegation> Delegations => Set<ApprovalDelegation>();
     public DbSet<WorkflowHistory> History => Set<WorkflowHistory>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -38,6 +39,10 @@ public sealed class WorkflowDbContext(
             e.ToTable("versions", SchemaName);
             e.HasKey(x => x.Id);
             e.Property(x => x.ApproverRoleName).HasMaxLength(100);
+            e.Property(x => x.RequireMakerChecker).HasDefaultValue(true).IsRequired();
+            e.Property(x => x.ApprovalMode).HasConversion<string>().HasMaxLength(32).HasDefaultValue(ApprovalMode.Sequential).IsRequired();
+            e.Property(x => x.ConditionExpressionJson).HasColumnType("jsonb");
+            e.Property(x => x.EscalationRoleName).HasMaxLength(100);
             e.HasIndex(x => new { x.DefinitionId, x.VersionNumber }).IsUnique();
             e.HasOne<WorkflowDefinition>().WithMany().HasForeignKey(x => x.DefinitionId).OnDelete(DeleteBehavior.Restrict);
         });
@@ -60,6 +65,7 @@ public sealed class WorkflowDbContext(
             e.ToTable("approval_tasks", SchemaName);
             e.HasKey(x => x.Id);
             e.Property(x => x.AssignedRoleName).HasMaxLength(100);
+            e.Property(x => x.EscalatedToRoleName).HasMaxLength(100);
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32).IsRequired();
             e.HasIndex(x => new { x.WorkflowInstanceId, x.StepOrder }).IsUnique();
             e.HasOne<WorkflowInstance>().WithMany().HasForeignKey(x => x.WorkflowInstanceId).OnDelete(DeleteBehavior.Restrict);
@@ -72,6 +78,15 @@ public sealed class WorkflowDbContext(
             e.Property(x => x.Comment).HasMaxLength(1000);
             e.HasIndex(x => x.ApprovalTaskId).IsUnique();
             e.HasOne<ApprovalTask>().WithMany().HasForeignKey(x => x.ApprovalTaskId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ApprovalDelegation>(e =>
+        {
+            e.ToTable("approval_delegations", SchemaName);
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Reason).HasMaxLength(500);
+            e.HasIndex(x => new { x.TenantId, x.DelegateUserId, x.IsActive });
+            e.HasIndex(x => new { x.TenantId, x.DelegatorUserId, x.IsActive });
         });
 
         modelBuilder.Entity<WorkflowHistory>(e =>

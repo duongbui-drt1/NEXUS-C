@@ -41,7 +41,7 @@ const NAV_ITEMS: NavEntry[] = [
   { to: '/core/organizations', label: 'Organizations', section: 'Core Management', icon: Network, permission: 'platform.organizations.read' },
   { to: '/core/users', label: 'Users', section: 'Core Management', icon: Users, permission: 'platform.users.read' },
   { to: '/core/access-control', label: 'Access Control', section: 'Core Management', icon: Shield, permission: 'platform.roles.read' },
-  { to: '/applications', label: 'Applications (F/E/M)', section: 'Ecosystem', icon: Layers, permission: 'platform.subscriptions.read' },
+  { to: '/applications', label: 'Applications (F/E/M)', section: 'Ecosystem', icon: Layers, permission: 'platform.applications.read' },
   { to: '/api-management', label: 'API Management', section: 'Ecosystem', icon: Webhook, permission: 'platform.api.read' },
   { to: '/integrations', label: 'Integration Hub', section: 'Ecosystem', icon: Plug, permission: 'platform.integrations.read' },
   { to: '/operations', label: 'Events & Jobs', section: 'Operations', icon: Activity, permission: 'platform.operations.read', platformOnly: true },

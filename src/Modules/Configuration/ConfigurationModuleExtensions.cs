@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Nexus.BuildingBlocks.Persistence;
 using Nexus.Modules.Configuration.Application;
 using Nexus.Modules.Configuration.Infrastructure;
+using Nexus.SharedKernel.Contracts;
 
 namespace Nexus.Modules.Configuration;
 
@@ -10,7 +11,9 @@ public static class ConfigurationModuleExtensions
     public static IServiceCollection AddConfigurationModule(this IServiceCollection services, string connectionString)
     {
         services.AddNexusModuleDbContext<ConfigurationDbContext>(connectionString, "configuration");
-        services.AddScoped<IConfigurationService, ConfigurationService>();
+        services.AddScoped<ConfigurationService>();
+        services.AddScoped<IConfigurationService>(sp => sp.GetRequiredService<ConfigurationService>());
+        services.AddScoped<IFeatureFlagEvaluator>(sp => sp.GetRequiredService<ConfigurationService>());
         return services;
     }
 }

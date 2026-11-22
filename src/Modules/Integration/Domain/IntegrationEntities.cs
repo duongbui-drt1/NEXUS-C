@@ -1,5 +1,4 @@
-using System.Net;
-using System.Net.Sockets;
+using Nexus.BuildingBlocks.Infrastructure;
 using Nexus.SharedKernel.Primitives;
 using Nexus.SharedKernel.Results;
 
@@ -16,6 +15,13 @@ public enum ConnectionStatus
 public enum SyncStatus
 {
     Running = 1,
+    Succeeded = 2,
+    Failed = 3
+}
+
+public enum WebhookDeliveryStatus
+{
+    Pending = 1,
     Succeeded = 2,
     Failed = 3
 }
@@ -164,16 +170,28 @@ public sealed class WebhookRegistration : TenantScopedEntity
     public string EventType { get; private set; } = string.Empty;
     public string TargetUrl { get; private set; } = string.Empty;
     public string SigningSecretRef { get; private set; } = string.Empty;
+    public string? SigningSecretHash { get; private set; }
+    public string? SecretPrefix { get; private set; }
+    public int SecretVersion { get; private set; } = 1;
+    public DateTimeOffset? SecretRotatedAt { get; private set; }
+    public string? Description { get; private set; }
     public bool IsActive { get; private set; } = true;
 
-    public static Result<WebhookRegistration> Create(Guid tenantId, string eventType, string targetUrl, string signingSecretRef)
+    public static Result<WebhookRegistration> Create(
+        Guid tenantId,
+        string eventType,
+        string targetUrl,
+        string signingSecretRef,
+        string? description = null,
+        string? secretHash = null,
+        string? secretPrefix = null)
     {
         if (string.IsNullOrWhiteSpace(eventType) || !Uri.TryCreate(targetUrl, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
         {
             return Error.Validation("WEBHOOK_INVALID_URL", "Webhook TargetUrl must be a valid HTTPS URL.");
         }
 
-        if (IsUnsafeSsrfTarget(uri))
+        if (SsrfGuard.IsUnsafeTarget(uri))
         {
             return Error.Validation(
                 "WEBHOOK_UNSAFE_TARGET",
@@ -182,9 +200,10 @@ public sealed class WebhookRegistration : TenantScopedEntity
 
         if (string.IsNullOrWhiteSpace(signingSecretRef) ||
             (!signingSecretRef.StartsWith("vault://", StringComparison.OrdinalIgnoreCase) &&
-             !signingSecretRef.StartsWith("env://", StringComparison.OrdinalIgnoreCase)))
+             !signingSecretRef.StartsWith("env://", StringComparison.OrdinalIgnoreCase) &&
+             !signingSecretRef.StartsWith("managed://", StringComparison.OrdinalIgnoreCase)))
         {
-            return Error.Validation("WEBHOOK_INVALID_SECRET_REF", "SigningSecretRef must be a vault:// or env:// reference.");
+            return Error.Validation("WEBHOOK_INVALID_SECRET_REF", "SigningSecretRef must be a vault://, env://, or managed:// reference.");
         }
 
         var wh = new WebhookRegistration
@@ -193,60 +212,107 @@ public sealed class WebhookRegistration : TenantScopedEntity
             EventType = eventType.Trim(),
             TargetUrl = targetUrl.Trim(),
             SigningSecretRef = signingSecretRef.Trim(),
+            SigningSecretHash = secretHash,
+            SecretPrefix = secretPrefix,
+            SecretVersion = 1,
+            Description = description?.Trim(),
             IsActive = true
         };
         wh.AssignTenant(tenantId);
         return wh;
     }
 
-    private static bool IsUnsafeSsrfTarget(Uri uri)
+    public Result Update(string eventType, string targetUrl, string? description)
     {
-        var host = uri.DnsSafeHost.Trim().TrimEnd('.').ToLowerInvariant();
-        if (string.IsNullOrWhiteSpace(host) ||
-            host is "localhost" or "ip6-localhost" or "metadata.google.internal" ||
-            host.EndsWith(".localhost", StringComparison.Ordinal) ||
-            host.EndsWith(".local", StringComparison.Ordinal) ||
-            host.EndsWith(".internal", StringComparison.Ordinal))
+        if (string.IsNullOrWhiteSpace(eventType) || !Uri.TryCreate(targetUrl, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
         {
-            return true;
+            return Result.Failure(Error.Validation("WEBHOOK_INVALID_URL", "Webhook TargetUrl must be a valid HTTPS URL."));
         }
 
-        if (IPAddress.TryParse(host, out var ip))
+        if (SsrfGuard.IsUnsafeTarget(uri))
         {
-            if (ip.IsIPv4MappedToIPv6)
-            {
-                ip = ip.MapToIPv4();
-            }
-
-            if (IPAddress.IsLoopback(ip) || ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.IPv6Any))
-            {
-                return true;
-            }
-
-            var bytes = ip.GetAddressBytes();
-            if (ip.AddressFamily == AddressFamily.InterNetwork && bytes.Length == 4)
-            {
-                // 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10 (CGNAT), 127.0.0.0/8, 169.254.0.0/16 (link-local/cloud metadata),
-                // 172.16.0.0/12, 192.168.0.0/16
-                return bytes[0] == 0
-                    || bytes[0] == 10
-                    || bytes[0] == 127
-                    || (bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127)
-                    || (bytes[0] == 169 && bytes[1] == 254)
-                    || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
-                    || (bytes[0] == 192 && bytes[1] == 168);
-            }
-
-            if (ip.AddressFamily == AddressFamily.InterNetworkV6 && bytes.Length == 16)
-            {
-                // Link-local fe80::/10 or Unique Local fc00::/7
-                var isLinkLocal = bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80;
-                var isUniqueLocal = (bytes[0] & 0xFE) == 0xFC;
-                return isLinkLocal || isUniqueLocal;
-            }
+            return Result.Failure(Error.Validation(
+                "WEBHOOK_UNSAFE_TARGET",
+                "Webhook TargetUrl cannot target localhost, loopback, link-local, metadata, or private internal network addresses."));
         }
 
-        return false;
+        EventType = eventType.Trim();
+        TargetUrl = targetUrl.Trim();
+        Description = description?.Trim();
+        return Result.Success();
+    }
+
+    public void SetActive(bool active) => IsActive = active;
+
+    public void RotateSecret(string newHash, string newPrefix, DateTimeOffset utcNow, string? newSecretRef = null)
+    {
+        SigningSecretHash = newHash;
+        SecretPrefix = newPrefix;
+        SecretVersion++;
+        SecretRotatedAt = utcNow;
+        if (!string.IsNullOrWhiteSpace(newSecretRef))
+        {
+            SigningSecretRef = newSecretRef.Trim();
+        }
+    }
+}
+
+public sealed class WebhookDelivery : TenantScopedEntity
+{
+    private WebhookDelivery() { }
+
+    public Guid WebhookId { get; private set; }
+    public Guid EventId { get; private set; }
+    public string EventType { get; private set; } = string.Empty;
+    public WebhookDeliveryStatus Status { get; private set; } = WebhookDeliveryStatus.Pending;
+    public int AttemptCount { get; private set; }
+    public int? HttpStatusCode { get; private set; }
+    public long TimestampUnix { get; private set; }
+    public string? SignatureDigestPrefix { get; private set; }
+    public string? FailureReason { get; private set; }
+    public DateTimeOffset AttemptedAt { get; private set; }
+    public DateTimeOffset? CompletedAt { get; private set; }
+
+    public static WebhookDelivery Record(
+        Guid tenantId,
+        Guid webhookId,
+        Guid eventId,
+        string eventType,
+        WebhookDeliveryStatus status,
+        int? httpStatusCode,
+        long timestampUnix,
+        string? signaturePrefix,
+        string? failureReason,
+        DateTimeOffset utcNow)
+    {
+        var d = new WebhookDelivery
+        {
+            Id = Guid.CreateVersion7(),
+            WebhookId = webhookId,
+            EventId = eventId,
+            EventType = eventType.Trim(),
+            Status = status,
+            AttemptCount = 1,
+            HttpStatusCode = httpStatusCode,
+            TimestampUnix = timestampUnix,
+            SignatureDigestPrefix = signaturePrefix,
+            FailureReason = failureReason?.Length > 1000 ? failureReason[..1000] : failureReason,
+            AttemptedAt = utcNow,
+            CompletedAt = status == WebhookDeliveryStatus.Pending ? null : utcNow
+        };
+        d.AssignTenant(tenantId);
+        return d;
+    }
+
+    public void RecordRetryAttempt(WebhookDeliveryStatus status, int? httpStatusCode, long timestampUnix, string? failureReason, DateTimeOffset utcNow)
+    {
+        AttemptCount++;
+        Status = status;
+        HttpStatusCode = httpStatusCode;
+        TimestampUnix = timestampUnix;
+        FailureReason = failureReason?.Length > 1000 ? failureReason[..1000] : failureReason;
+        AttemptedAt = utcNow;
+        CompletedAt = status == WebhookDeliveryStatus.Pending ? null : utcNow;
     }
 }
 

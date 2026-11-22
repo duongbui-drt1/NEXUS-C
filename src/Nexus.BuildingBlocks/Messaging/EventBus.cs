@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -6,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Nexus.BuildingBlocks.Observability;
 using Nexus.SharedKernel.Context;
 using Nexus.SharedKernel.Contracts;
 using Nexus.SharedKernel.Events;
@@ -58,6 +60,12 @@ public sealed class RabbitMqEventBus(
 
     public async Task PublishAsync(EventEnvelope envelope, CancellationToken ct = default)
     {
+        using var activity = NexusPlatformMetrics.ActivitySource.StartActivity("rabbitmq.publish", ActivityKind.Producer);
+        activity?.SetTag("messaging.system", "rabbitmq");
+        activity?.SetTag("messaging.destination", _options.ExchangeName);
+        activity?.SetTag("nexus.event.type", envelope.EventType);
+        activity?.SetTag("nexus.correlation_id", envelope.CorrelationId);
+
         var connection = await GetOrCreateConnectionAsync(ct);
         await using var channel = await connection.CreateChannelAsync(cancellationToken: ct);
 
@@ -86,7 +94,9 @@ public sealed class RabbitMqEventBus(
             Headers = new Dictionary<string, object?>
             {
                 ["x-tenant-id"] = envelope.TenantId?.ToString("D") ?? string.Empty,
-                ["x-schema-version"] = envelope.SchemaVersion
+                ["x-schema-version"] = envelope.SchemaVersion,
+                ["x-producer"] = envelope.Producer,
+                ["x-causation-id"] = envelope.CausationId ?? string.Empty
             }
         };
 
@@ -198,9 +208,13 @@ public sealed class IdempotentEventProcessor(
         Func<EventEnvelope, CancellationToken, Task> handler,
         CancellationToken ct = default)
     {
+        using var activity = NexusPlatformMetrics.ActivitySource.StartActivity("event.consume", ActivityKind.Consumer);
+        activity?.SetTag("nexus.event.type", envelope.EventType);
+        activity?.SetTag("nexus.consumer", consumerName);
+        activity?.SetTag("nexus.correlation_id", envelope.CorrelationId);
+
         correlationContext.SetCorrelationId(envelope.CorrelationId);
 
-        // Enforce strict per-message tenant isolation in background worker context.
         using var scope = envelope.TenantId.HasValue
             ? tenantContext.BeginScope(envelope.TenantId.Value, platformBypass: false, bypassReason: null)
             : tenantContext.BeginScope(null, platformBypass: false, bypassReason: null);
@@ -221,7 +235,6 @@ public sealed class IdempotentEventProcessor(
             messagingDbContext.InboxMessages.Add(
                 InboxMessage.Create(envelope.EventId, consumerName, envelope.EventType, envelope.TenantId, clock.UtcNow));
 
-            // Save inbox record first to leverage PostgreSQL unique constraint against concurrent duplicate consumers.
             await messagingDbContext.SaveChangesAsync(ct);
 
             await handler(envelope, ct);
@@ -278,6 +291,7 @@ public sealed class OutboxDispatcher(
                 await eventBus.PublishAsync(envelope, ct);
                 message.MarkPublished(clock.UtcNow);
                 processedCount++;
+                NexusPlatformMetrics.OutboxPublished.Add(1, new KeyValuePair<string, object?>("event_type", message.EventType));
             }
             catch (Exception ex)
             {
@@ -286,10 +300,12 @@ public sealed class OutboxDispatcher(
                     "Failed to publish outbox event {EventId} ({EventType}) on attempt {Attempt}",
                     message.EventId, message.EventType, message.RetryCount + 1);
 
+                NexusPlatformMetrics.OutboxFailed.Add(1, new KeyValuePair<string, object?>("event_type", message.EventType));
                 message.RecordFailure(ex.Message, clock.UtcNow, opts.MaxRetries);
                 if (message.Status == OutboxStatus.DeadLettered)
                 {
                     dbContext.DeadLetterMessages.Add(DeadLetterMessage.FromOutbox(message, ex.Message, clock.UtcNow));
+                    NexusPlatformMetrics.DeadLettersCreated.Add(1, new KeyValuePair<string, object?>("event_type", message.EventType));
                     logger.LogError(
                         "Outbox event {EventId} ({EventType}) moved to dead_letter_messages after {Retries} retries.",
                         message.EventId, message.EventType, message.RetryCount);
@@ -306,10 +322,15 @@ public sealed class OutboxDispatcher(
 public sealed class OutboxProcessorBackgroundService(
     IServiceScopeFactory scopeFactory,
     IOptions<OutboxOptions> options,
+    IBackgroundJobTracker jobTracker,
+    ISystemClock clock,
     ILogger<OutboxProcessorBackgroundService> logger) : BackgroundService
 {
+    public const string JobName = "OutboxDispatcher";
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        jobTracker.RegisterJob(JobName);
         if (!options.Value.EnableBackgroundProcessor)
         {
             return;
@@ -317,11 +338,15 @@ public sealed class OutboxProcessorBackgroundService(
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            var sw = Stopwatch.StartNew();
+            jobTracker.RecordRunStarted(JobName, clock.UtcNow);
             try
             {
                 await using var scope = scopeFactory.CreateAsyncScope();
                 var dispatcher = scope.ServiceProvider.GetRequiredService<OutboxDispatcher>();
-                await dispatcher.DispatchBatchAsync(stoppingToken);
+                var count = await dispatcher.DispatchBatchAsync(stoppingToken);
+                sw.Stop();
+                jobTracker.RecordRunSucceeded(JobName, clock.UtcNow, count, sw.Elapsed.TotalMilliseconds);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -329,6 +354,8 @@ public sealed class OutboxProcessorBackgroundService(
             }
             catch (Exception ex)
             {
+                sw.Stop();
+                jobTracker.RecordRunFailed(JobName, clock.UtcNow, ex.Message, sw.Elapsed.TotalMilliseconds);
                 logger.LogError(ex, "Error in OutboxProcessorBackgroundService loop.");
             }
 

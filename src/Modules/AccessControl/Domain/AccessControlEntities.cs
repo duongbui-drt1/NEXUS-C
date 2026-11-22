@@ -10,6 +10,12 @@ public enum RoleScopeType
     Tenant = 2
 }
 
+public enum AuthorizationEffect
+{
+    Allow = 1,
+    Deny = 2
+}
+
 public sealed class Role : AuditableEntity
 {
     private Role() { }
@@ -90,10 +96,17 @@ public sealed class UserRole : AuditableEntity
     public Guid? TenantId { get; private set; }
     public string? ResourceScopeType { get; private set; }
     public string? ResourceScopeId { get; private set; }
+    public AuthorizationEffect Effect { get; private set; } = AuthorizationEffect.Allow;
 
     public Role? Role { get; private set; }
 
-    public static UserRole Assign(Guid userId, Guid roleId, Guid? tenantId, string? resourceScopeType = null, string? resourceScopeId = null)
+    public static UserRole Assign(
+        Guid userId,
+        Guid roleId,
+        Guid? tenantId,
+        string? resourceScopeType = null,
+        string? resourceScopeId = null,
+        AuthorizationEffect effect = AuthorizationEffect.Allow)
         => new()
         {
             Id = Guid.CreateVersion7(),
@@ -101,6 +114,7 @@ public sealed class UserRole : AuditableEntity
             RoleId = roleId,
             TenantId = tenantId,
             ResourceScopeType = string.IsNullOrWhiteSpace(resourceScopeType) ? null : resourceScopeType.Trim(),
-            ResourceScopeId = string.IsNullOrWhiteSpace(resourceScopeId) ? null : resourceScopeId.Trim()
+            ResourceScopeId = string.IsNullOrWhiteSpace(resourceScopeId) ? null : resourceScopeId.Trim(),
+            Effect = effect
         };
 }

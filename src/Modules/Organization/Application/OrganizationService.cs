@@ -41,10 +41,11 @@ public sealed record OrganizationUnitDto(
     string Code,
     string Name,
     string UnitType,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    string Status = "Active");
 
 public sealed record CreateOrganizationUnitRequest(Guid? ParentId, string Code, string Name, OrganizationUnitType UnitType);
-public sealed record UpdateOrganizationUnitRequest(Guid? ParentId, string Name, OrganizationUnitType UnitType);
+public sealed record UpdateOrganizationUnitRequest(Guid? ParentId, string Name, OrganizationUnitType UnitType, OrganizationStatus Status = OrganizationStatus.Active);
 
 public sealed record UserOrganizationAssignmentDto(
     Guid Id,
@@ -53,9 +54,19 @@ public sealed record UserOrganizationAssignmentDto(
     Guid? BranchId,
     Guid? OrganizationUnitId,
     string? Title,
-    bool IsPrimary);
+    bool IsPrimary,
+    bool IsActive = true,
+    DateTimeOffset? EffectiveFrom = null,
+    DateTimeOffset? EffectiveTo = null);
 
-public sealed record AssignUserOrganizationRequest(Guid UserId, Guid? BranchId, Guid? OrganizationUnitId, string? Title, bool IsPrimary);
+public sealed record AssignUserOrganizationRequest(
+    Guid UserId,
+    Guid? BranchId,
+    Guid? OrganizationUnitId,
+    string? Title,
+    bool IsPrimary,
+    DateTimeOffset? EffectiveFrom = null,
+    DateTimeOffset? EffectiveTo = null);
 
 public interface IOrganizationService
 {
@@ -76,12 +87,18 @@ public interface IOrganizationService
     Task<Result<IReadOnlyList<OrganizationUnitDto>>> ListUnitsAsync(CancellationToken ct = default);
 
     Task<Result<UserOrganizationAssignmentDto>> AssignUserAsync(AssignUserOrganizationRequest request, CancellationToken ct = default);
+    Task<Result<IReadOnlyList<UserOrganizationAssignmentDto>>> ListAssignmentsAsync(Guid? userId = null, bool includeInactive = false, CancellationToken ct = default);
+    Task<Result> RevokeAssignmentAsync(Guid assignmentId, CancellationToken ct = default);
+    Task<Result<EffectiveOrganizationScope>> GetUserEffectiveScopeAsync(Guid userId, CancellationToken ct = default);
 }
 
 public sealed class OrganizationService(
     OrganizationDbContext db,
     ITenantContext tenantContext,
-    IAuditWriter auditWriter) : IOrganizationService
+    IUserDirectoryReader userDirectory,
+    ITenantAccessValidator tenantValidator,
+    ISystemClock clock,
+    IAuditWriter auditWriter) : IOrganizationService, IOrganizationScopeReader
 {
     private Result<Guid> RequireTenant()
     {
@@ -197,11 +214,10 @@ public sealed class OrganizationService(
         var tenantRes = RequireTenant();
         if (tenantRes.IsFailure) return Result.Failure<BranchDto>(tenantRes.Error);
 
-        // Relationship validation: LegalEntity must exist in THIS tenant (enforced by tenant filter + RLS!)
-        var leExists = await db.LegalEntities.AsNoTracking().AnyAsync(x => x.Id == request.LegalEntityId, ct);
+        var leExists = await db.LegalEntities.AsNoTracking().AnyAsync(x => x.Id == request.LegalEntityId && x.Status == OrganizationStatus.Active, ct);
         if (!leExists)
         {
-            return Error.NotFound("ORG_LEGAL_ENTITY_NOT_FOUND", "Specified legal entity does not exist in the current tenant.");
+            return Error.NotFound("ORG_LEGAL_ENTITY_NOT_FOUND", "Specified active legal entity does not exist in the current tenant.");
         }
 
         var created = Branch.Create(tenantRes.Value, request.LegalEntityId, request.Code, request.Name, request.Address);
@@ -255,10 +271,14 @@ public sealed class OrganizationService(
         var branch = await db.Branches.FirstOrDefaultAsync(x => x.Id == id, ct);
         if (branch is null) return Error.NotFound("ORG_BRANCH_NOT_FOUND", $"Branch '{id}' was not found.");
 
+        var before = Map(branch);
         var res = branch.Update(request.Name, request.Address, request.Status);
         if (res.IsFailure) return Result.Failure<BranchDto>(res.Error);
 
         await db.SaveChangesAsync(ct);
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "organization.branch.update", "Branch", branch.Id.ToString("D"), tenantRes.Value, "Success", BeforeState: before, AfterState: Map(branch)), ct);
+
         return Map(branch);
     }
 
@@ -272,6 +292,9 @@ public sealed class OrganizationService(
 
         db.Branches.Remove(branch);
         await db.SaveChangesAsync(ct);
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "organization.branch.delete", "Branch", id.ToString("D"), tenantRes.Value, "Success"), ct);
+
         return Result.Success();
     }
 
@@ -282,10 +305,10 @@ public sealed class OrganizationService(
 
         if (request.ParentId.HasValue)
         {
-            var parentExists = await db.OrganizationUnits.AsNoTracking().AnyAsync(u => u.Id == request.ParentId.Value, ct);
+            var parentExists = await db.OrganizationUnits.AsNoTracking().AnyAsync(u => u.Id == request.ParentId.Value && u.Status == OrganizationStatus.Active, ct);
             if (!parentExists)
             {
-                return Error.NotFound("ORG_PARENT_NOT_FOUND", "Specified parent organization unit does not exist in this tenant.");
+                return Error.NotFound("ORG_PARENT_NOT_FOUND", "Specified active parent organization unit does not exist in this tenant.");
             }
         }
 
@@ -300,6 +323,10 @@ public sealed class OrganizationService(
 
         db.OrganizationUnits.Add(unit);
         await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "organization.unit.create", "OrganizationUnit", unit.Id.ToString("D"), tenantRes.Value, "Success", AfterState: Map(unit)), ct);
+
         return Map(unit);
     }
 
@@ -313,7 +340,6 @@ public sealed class OrganizationService(
 
         if (request.ParentId.HasValue)
         {
-            // Detect cycle across ancestor chain within current tenant
             var allUnits = await db.OrganizationUnits.AsNoTracking()
                 .Select(u => new { u.Id, u.ParentId })
                 .ToDictionaryAsync(u => u.Id, u => u.ParentId, ct);
@@ -335,10 +361,15 @@ public sealed class OrganizationService(
             }
         }
 
-        var res = unit.Update(request.ParentId, request.Name, request.UnitType);
+        var before = Map(unit);
+        var res = unit.Update(request.ParentId, request.Name, request.UnitType, request.Status);
         if (res.IsFailure) return Result.Failure<OrganizationUnitDto>(res.Error);
 
         await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "organization.unit.update", "OrganizationUnit", unit.Id.ToString("D"), tenantRes.Value, "Success", BeforeState: before, AfterState: Map(unit)), ct);
+
         return Map(unit);
     }
 
@@ -359,26 +390,175 @@ public sealed class OrganizationService(
     {
         var tenantRes = RequireTenant();
         if (tenantRes.IsFailure) return Result.Failure<UserOrganizationAssignmentDto>(tenantRes.Error);
+        var tenantId = tenantRes.Value;
 
-        if (request.BranchId.HasValue && !await db.Branches.AsNoTracking().AnyAsync(b => b.Id == request.BranchId.Value, ct))
+        if (!request.BranchId.HasValue && !request.OrganizationUnitId.HasValue)
         {
-            return Error.NotFound("ORG_BRANCH_NOT_FOUND", "Specified branch does not exist in this tenant.");
+            return Error.Validation("ORG_ASSIGNMENT_TARGET_REQUIRED", "At least one of BranchId or OrganizationUnitId must be specified.");
         }
 
-        if (request.OrganizationUnitId.HasValue && !await db.OrganizationUnits.AsNoTracking().AnyAsync(u => u.Id == request.OrganizationUnitId.Value, ct))
+        if (request.EffectiveFrom.HasValue && request.EffectiveTo.HasValue && request.EffectiveTo.Value <= request.EffectiveFrom.Value)
         {
-            return Error.NotFound("ORG_UNIT_NOT_FOUND", "Specified organization unit does not exist in this tenant.");
+            return Error.Validation("ORG_INVALID_EFFECTIVE_RANGE", "EffectiveTo must be after EffectiveFrom.");
+        }
+
+        // Security P0: verify target user exists AND holds an active membership in this exact tenant!
+        var targetUser = await userDirectory.GetByIdAsync(request.UserId, ct);
+        if (targetUser is null)
+        {
+            return Error.NotFound("USER_NOT_FOUND", $"User '{request.UserId}' was not found.");
+        }
+
+        var membership = await tenantValidator.ValidateMembershipAsync(request.UserId, tenantId, ct);
+        if (membership is null || !membership.IsActiveMember)
+        {
+            return Error.Forbidden("USER_NOT_TENANT_MEMBER", "Cannot assign a user who does not hold an active membership in the current tenant.");
+        }
+
+        if (request.BranchId.HasValue && !await db.Branches.AsNoTracking().AnyAsync(b => b.Id == request.BranchId.Value && b.Status == OrganizationStatus.Active, ct))
+        {
+            return Error.NotFound("ORG_BRANCH_NOT_FOUND", "Specified active branch does not exist in this tenant.");
+        }
+
+        if (request.OrganizationUnitId.HasValue && !await db.OrganizationUnits.AsNoTracking().AnyAsync(u => u.Id == request.OrganizationUnitId.Value && u.Status == OrganizationStatus.Active, ct))
+        {
+            return Error.NotFound("ORG_UNIT_NOT_FOUND", "Specified active organization unit does not exist in this tenant.");
         }
 
         var assignment = UserOrganizationAssignment.Create(
-            tenantRes.Value, request.UserId, request.BranchId, request.OrganizationUnitId, request.Title, request.IsPrimary);
+            tenantId,
+            request.UserId,
+            request.BranchId,
+            request.OrganizationUnitId,
+            request.Title,
+            request.IsPrimary,
+            request.EffectiveFrom ?? clock.UtcNow,
+            request.EffectiveTo);
 
         db.UserAssignments.Add(assignment);
         await db.SaveChangesAsync(ct);
 
-        return new UserOrganizationAssignmentDto(
-            assignment.Id, assignment.TenantId, assignment.UserId,
-            assignment.BranchId, assignment.OrganizationUnitId, assignment.Title, assignment.IsPrimary);
+        var dto = MapAssignment(assignment);
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "organization.assignment.create", "UserOrganizationAssignment", assignment.Id.ToString("D"), tenantId, "Success", AfterState: dto), ct);
+
+        return dto;
+    }
+
+    public async Task<Result<IReadOnlyList<UserOrganizationAssignmentDto>>> ListAssignmentsAsync(Guid? userId = null, bool includeInactive = false, CancellationToken ct = default)
+    {
+        var tenantRes = RequireTenant();
+        if (tenantRes.IsFailure) return Result.Failure<IReadOnlyList<UserOrganizationAssignmentDto>>(tenantRes.Error);
+
+        var query = db.UserAssignments.AsNoTracking();
+        if (userId.HasValue)
+        {
+            query = query.Where(a => a.UserId == userId.Value);
+        }
+
+        if (!includeInactive)
+        {
+            var now = clock.UtcNow;
+            query = query.Where(a => a.IsActive && a.EffectiveFrom <= now && (a.EffectiveTo == null || a.EffectiveTo > now));
+        }
+
+        var items = await query.OrderByDescending(a => a.IsPrimary).ThenByDescending(a => a.EffectiveFrom)
+            .Select(a => MapAssignment(a))
+            .ToListAsync(ct);
+
+        return items;
+    }
+
+    public async Task<Result> RevokeAssignmentAsync(Guid assignmentId, CancellationToken ct = default)
+    {
+        var tenantRes = RequireTenant();
+        if (tenantRes.IsFailure) return Result.Failure(tenantRes.Error);
+
+        var assignment = await db.UserAssignments.FirstOrDefaultAsync(a => a.Id == assignmentId, ct);
+        if (assignment is null)
+        {
+            return Result.Failure(Error.NotFound("ORG_ASSIGNMENT_NOT_FOUND", "Organization assignment was not found."));
+        }
+
+        var before = MapAssignment(assignment);
+        assignment.Deactivate(clock.UtcNow);
+        await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "organization.assignment.revoke", "UserOrganizationAssignment", assignmentId.ToString("D"), tenantRes.Value, "Success",
+            BeforeState: before, AfterState: MapAssignment(assignment)), ct);
+
+        return Result.Success();
+    }
+
+    public async Task<Result<EffectiveOrganizationScope>> GetUserEffectiveScopeAsync(Guid userId, CancellationToken ct = default)
+    {
+        var tenantRes = RequireTenant();
+        if (tenantRes.IsFailure) return Result.Failure<EffectiveOrganizationScope>(tenantRes.Error);
+
+        return await GetEffectiveScopeAsync(userId, tenantRes.Value, ct);
+    }
+
+    public async Task<EffectiveOrganizationScope> GetEffectiveScopeAsync(Guid userId, Guid tenantId, CancellationToken ct = default)
+    {
+        using var scope = tenantContext.BeginScope(tenantId, platformBypass: false);
+        var now = clock.UtcNow;
+
+        var activeAssignments = await db.UserAssignments.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.UserId == userId && a.IsActive && a.EffectiveFrom <= now && (a.EffectiveTo == null || a.EffectiveTo > now))
+            .ToListAsync(ct);
+
+        var assignedBranchIds = activeAssignments
+            .Where(a => a.BranchId.HasValue)
+            .Select(a => a.BranchId!.Value)
+            .Distinct()
+            .ToList();
+
+        var activeBranches = assignedBranchIds.Count == 0
+            ? []
+            : await db.Branches.AsNoTracking()
+                .Where(b => assignedBranchIds.Contains(b.Id) && b.Status == OrganizationStatus.Active)
+                .Select(b => new { b.Id, b.LegalEntityId })
+                .ToListAsync(ct);
+
+        var validBranchIds = activeBranches.Select(b => b.Id).Distinct().ToList();
+        var legalEntityIds = activeBranches.Select(b => b.LegalEntityId).Distinct().ToList();
+
+        var rootUnitIds = activeAssignments
+            .Where(a => a.OrganizationUnitId.HasValue)
+            .Select(a => a.OrganizationUnitId!.Value)
+            .ToHashSet();
+
+        var effectiveUnitIds = new HashSet<Guid>();
+        if (rootUnitIds.Count > 0)
+        {
+            var activeUnits = await db.OrganizationUnits.AsNoTracking()
+                .Where(u => u.Status == OrganizationStatus.Active)
+                .Select(u => new { u.Id, u.ParentId })
+                .ToListAsync(ct);
+
+            var childrenByParent = activeUnits
+                .Where(u => u.ParentId.HasValue)
+                .GroupBy(u => u.ParentId!.Value)
+                .ToDictionary(g => g.Key, g => g.Select(x => x.Id).ToList());
+
+            var activeSet = activeUnits.Select(u => u.Id).ToHashSet();
+            var queue = new Queue<Guid>(rootUnitIds.Where(activeSet.Contains));
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+                if (!effectiveUnitIds.Add(current)) continue;
+                if (childrenByParent.TryGetValue(current, out var children))
+                {
+                    foreach (var child in children)
+                    {
+                        queue.Enqueue(child);
+                    }
+                }
+            }
+        }
+
+        return new EffectiveOrganizationScope(userId, tenantId, legalEntityIds, validBranchIds, effectiveUnitIds.ToList());
     }
 
     private static LegalEntityDto Map(LegalEntity e) => new(
@@ -388,5 +568,8 @@ public sealed class OrganizationService(
         b.Id, b.TenantId, b.LegalEntityId, b.Code, b.Name, b.Address, b.Status.ToString(), b.CreatedAt);
 
     private static OrganizationUnitDto Map(OrganizationUnit u) => new(
-        u.Id, u.TenantId, u.ParentId, u.Code, u.Name, u.UnitType.ToString(), u.CreatedAt);
+        u.Id, u.TenantId, u.ParentId, u.Code, u.Name, u.UnitType.ToString(), u.CreatedAt, u.Status.ToString());
+
+    private static UserOrganizationAssignmentDto MapAssignment(UserOrganizationAssignment a) => new(
+        a.Id, a.TenantId, a.UserId, a.BranchId, a.OrganizationUnitId, a.Title, a.IsPrimary, a.IsActive, a.EffectiveFrom, a.EffectiveTo);
 }

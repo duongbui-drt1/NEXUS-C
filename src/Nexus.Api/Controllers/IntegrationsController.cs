@@ -39,10 +39,60 @@ public sealed class IntegrationsController(IIntegrationService integrationServic
     public async Task<IActionResult> ListSyncLogs(Guid connectionId, CancellationToken ct)
         => (await integrationService.ListSyncLogsAsync(connectionId, ct)).ToActionResult(HttpContext);
 
+    [HttpGet("errors")]
+    [RequirePermission(Permissions.IntegrationsRead)]
+    public async Task<IActionResult> ListErrors(CancellationToken ct)
+        => (await integrationService.ListErrorsAsync(ct)).ToActionResult(HttpContext);
+
     [HttpPost("webhooks")]
     [RequirePermission(Permissions.IntegrationsManage)]
     public async Task<IActionResult> RegisterWebhook([FromBody] CreateWebhookRequest request, CancellationToken ct)
         => (await integrationService.RegisterWebhookAsync(request, ct)).ToActionResult(HttpContext, StatusCodes.Status201Created);
+
+    [HttpGet("webhooks")]
+    [RequirePermission(Permissions.IntegrationsRead)]
+    public async Task<IActionResult> ListWebhooks(CancellationToken ct)
+        => (await integrationService.ListWebhooksAsync(ct)).ToActionResult(HttpContext);
+
+    [HttpPut("webhooks/{webhookId:guid}")]
+    [RequirePermission(Permissions.IntegrationsManage)]
+    public async Task<IActionResult> UpdateWebhook(Guid webhookId, [FromBody] UpdateWebhookRequest request, CancellationToken ct)
+        => (await integrationService.UpdateWebhookAsync(webhookId, request, ct)).ToActionResult(HttpContext);
+
+    [HttpPost("webhooks/{webhookId:guid}/disable")]
+    [RequirePermission(Permissions.IntegrationsManage)]
+    public async Task<IActionResult> DisableWebhook(Guid webhookId, CancellationToken ct)
+        => (await integrationService.SetWebhookActiveAsync(webhookId, false, ct)).ToActionResult(HttpContext);
+
+    [HttpPost("webhooks/{webhookId:guid}/enable")]
+    [RequirePermission(Permissions.IntegrationsManage)]
+    public async Task<IActionResult> EnableWebhook(Guid webhookId, CancellationToken ct)
+        => (await integrationService.SetWebhookActiveAsync(webhookId, true, ct)).ToActionResult(HttpContext);
+
+    [HttpDelete("webhooks/{webhookId:guid}")]
+    [RequirePermission(Permissions.IntegrationsManage)]
+    public async Task<IActionResult> DeleteWebhook(Guid webhookId, CancellationToken ct)
+        => (await integrationService.DeleteWebhookAsync(webhookId, ct)).ToActionResult(HttpContext);
+
+    [HttpPost("webhooks/{webhookId:guid}/rotate-secret")]
+    [RequirePermission(Permissions.IntegrationsManage)]
+    public async Task<IActionResult> RotateWebhookSecret(Guid webhookId, CancellationToken ct)
+        => (await integrationService.RotateWebhookSecretAsync(webhookId, ct)).ToActionResult(HttpContext);
+
+    [HttpGet("webhooks/{webhookId:guid}/deliveries")]
+    [RequirePermission(Permissions.IntegrationsRead)]
+    public async Task<IActionResult> ListWebhookDeliveries(Guid webhookId, CancellationToken ct)
+        => (await integrationService.ListWebhookDeliveriesAsync(webhookId, ct)).ToActionResult(HttpContext);
+
+    [HttpPost("webhooks/{webhookId:guid}/deliveries")]
+    [RequirePermission(Permissions.IntegrationsManage)]
+    public async Task<IActionResult> RecordWebhookDelivery(Guid webhookId, [FromBody] RecordWebhookDeliveryRequest request, CancellationToken ct)
+        => (await integrationService.RecordWebhookDeliveryAsync(webhookId, request, ct)).ToActionResult(HttpContext, StatusCodes.Status201Created);
+
+    [HttpPost("webhooks/deliveries/{deliveryId:guid}/retry")]
+    [RequirePermission(Permissions.IntegrationsManage)]
+    public async Task<IActionResult> RetryWebhookDelivery(Guid deliveryId, CancellationToken ct)
+        => (await integrationService.RetryWebhookDeliveryAsync(deliveryId, ct)).ToActionResult(HttpContext);
 
     [HttpPost("ai/models")]
     [RequirePermission(Permissions.AiGatewayManage)]

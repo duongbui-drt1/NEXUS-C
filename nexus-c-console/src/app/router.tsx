@@ -133,7 +133,7 @@ export function AppRouter() {
         <Route
           path="applications"
           element={
-            <RequirePermission permission="platform.subscriptions.read">
+            <RequirePermission permission="platform.applications.read">
               <LazyWrap><ApplicationsPage /></LazyWrap>
             </RequirePermission>
           }

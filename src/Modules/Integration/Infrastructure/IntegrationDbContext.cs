@@ -19,6 +19,7 @@ public sealed class IntegrationDbContext(
     public DbSet<SyncLog> SyncLogs => Set<SyncLog>();
     public DbSet<IntegrationError> Errors => Set<IntegrationError>();
     public DbSet<WebhookRegistration> Webhooks => Set<WebhookRegistration>();
+    public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
     public DbSet<AiModelConfiguration> AiModels => Set<AiModelConfiguration>();
     public DbSet<AiUsageLog> AiUsageLogs => Set<AiUsageLog>();
 
@@ -71,7 +72,23 @@ public sealed class IntegrationDbContext(
             e.Property(x => x.EventType).HasMaxLength(150).IsRequired();
             e.Property(x => x.TargetUrl).HasMaxLength(500).IsRequired();
             e.Property(x => x.SigningSecretRef).HasMaxLength(300).IsRequired();
+            e.Property(x => x.SigningSecretHash).HasMaxLength(128);
+            e.Property(x => x.SecretPrefix).HasMaxLength(32);
+            e.Property(x => x.SecretVersion).HasDefaultValue(1).IsRequired();
+            e.Property(x => x.Description).HasMaxLength(500);
             e.HasIndex(x => new { x.TenantId, x.EventType });
+        });
+
+        modelBuilder.Entity<WebhookDelivery>(e =>
+        {
+            e.ToTable("webhook_deliveries", SchemaName);
+            e.HasKey(x => x.Id);
+            e.Property(x => x.EventType).HasMaxLength(150).IsRequired();
+            e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32).IsRequired();
+            e.Property(x => x.SignatureDigestPrefix).HasMaxLength(32);
+            e.Property(x => x.FailureReason).HasMaxLength(1000);
+            e.HasIndex(x => new { x.TenantId, x.WebhookId, x.AttemptedAt });
+            e.HasOne<WebhookRegistration>().WithMany().HasForeignKey(x => x.WebhookId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<AiModelConfiguration>(e =>

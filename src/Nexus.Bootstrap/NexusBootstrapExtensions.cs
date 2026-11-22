@@ -9,6 +9,7 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Nexus.BuildingBlocks.Context;
 using Nexus.BuildingBlocks.Infrastructure;
 using Nexus.BuildingBlocks.Messaging;
+using Nexus.BuildingBlocks.Observability;
 using Nexus.BuildingBlocks.Persistence;
 using Nexus.BuildingBlocks.Web;
 using Nexus.Modules.AccessControl;
@@ -50,6 +51,7 @@ public static class NexusBootstrapExtensions
             .ConfigureResource(r => r.AddService("nexus-c-foundation", serviceVersion: "1.0.0"))
             .WithTracing(tracing =>
             {
+                tracing.AddSource(NexusPlatformMetrics.ActivitySourceName, "Npgsql");
                 tracing.AddAspNetCoreInstrumentation();
                 tracing.AddHttpClientInstrumentation();
                 if (!string.IsNullOrWhiteSpace(otelEndpoint))
@@ -59,6 +61,7 @@ public static class NexusBootstrapExtensions
             })
             .WithMetrics(metrics =>
             {
+                metrics.AddMeter(NexusPlatformMetrics.MeterName);
                 metrics.AddAspNetCoreInstrumentation();
                 metrics.AddHttpClientInstrumentation();
                 if (!string.IsNullOrWhiteSpace(otelEndpoint))
@@ -105,7 +108,9 @@ public static class NexusBootstrapExtensions
             services.AddSingleton<IEventBus>(sp => sp.GetRequiredService<InMemoryEventBus>());
         }
 
+        services.AddSingleton<IBackgroundJobTracker, BackgroundJobTracker>();
         services.AddScoped<IEventOutboxWriter, DatabaseOutboxWriter>();
+        services.AddScoped<IPlatformOperationsService, PlatformOperationsService>();
         services.AddScoped<OutboxDispatcher>();
         services.AddScoped<IdempotentEventProcessor>();
         services.AddHostedService<OutboxProcessorBackgroundService>();

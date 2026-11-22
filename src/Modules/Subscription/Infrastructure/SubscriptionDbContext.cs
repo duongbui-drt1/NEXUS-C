@@ -14,6 +14,8 @@ public sealed class SubscriptionDbContext(
 {
     public override string SchemaName => "subscription";
 
+    public DbSet<RegisteredApplication> Applications => Set<RegisteredApplication>();
+    public DbSet<TenantApplicationActivation> TenantApplications => Set<TenantApplicationActivation>();
     public DbSet<Plan> Plans => Set<Plan>();
     public DbSet<PlanFeature> PlanFeatures => Set<PlanFeature>();
     public DbSet<TenantSubscription> Subscriptions => Set<TenantSubscription>();
@@ -23,6 +25,31 @@ public sealed class SubscriptionDbContext(
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<RegisteredApplication>(e =>
+        {
+            e.ToTable("applications", SchemaName);
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Code).HasMaxLength(32).IsRequired();
+            e.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Description).HasMaxLength(1000);
+            e.Property(x => x.CurrentVersion).HasMaxLength(32).IsRequired();
+            e.Property(x => x.ReleaseChannel).HasMaxLength(32).IsRequired();
+            e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32).IsRequired();
+            e.Property(x => x.MinPlatformVersion).HasMaxLength(32).IsRequired();
+            e.Property(x => x.RequiredCapabilities).HasMaxLength(1000);
+            e.Property(x => x.ModuleDependencies).HasMaxLength(500);
+            e.Property(x => x.CompatibilityMetadataJson).HasColumnType("jsonb");
+            e.HasIndex(x => x.Code).IsUnique();
+        });
+
+        modelBuilder.Entity<TenantApplicationActivation>(e =>
+        {
+            e.ToTable("tenant_applications", SchemaName);
+            e.HasKey(x => x.Id);
+            e.Property(x => x.ApplicationCode).HasMaxLength(32).IsRequired();
+            e.HasIndex(x => new { x.TenantId, x.ApplicationCode }).IsUnique();
+        });
+
         modelBuilder.Entity<Plan>(e =>
         {
             e.ToTable("plans", SchemaName);
@@ -32,6 +59,7 @@ public sealed class SubscriptionDbContext(
             e.Property(x => x.Description).HasMaxLength(1000);
             e.Property(x => x.MonthlyPrice).HasPrecision(18, 2);
             e.Property(x => x.Currency).HasMaxLength(3).IsRequired();
+            e.Property(x => x.Version).HasDefaultValue(1).IsRequired();
             e.HasIndex(x => x.Code).IsUnique();
         });
 
@@ -76,7 +104,9 @@ public sealed class SubscriptionDbContext(
             e.ToTable("usage_records", SchemaName);
             e.HasKey(x => x.Id);
             e.Property(x => x.FeatureCode).HasMaxLength(64).IsRequired();
+            e.Property(x => x.IdempotencyKey).HasMaxLength(150);
             e.HasIndex(x => new { x.TenantId, x.FeatureCode, x.RecordedAt });
+            e.HasIndex(x => new { x.TenantId, x.IdempotencyKey }).IsUnique().HasFilter("\"IdempotencyKey\" IS NOT NULL");
         });
 
         base.OnModelCreating(modelBuilder);

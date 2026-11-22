@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Http;
@@ -11,7 +12,7 @@ using Npgsql;
 
 namespace Nexus.BuildingBlocks.Web;
 
-public sealed class CorrelationIdMiddleware(RequestDelegate next)
+public sealed class CorrelationIdMiddleware(RequestDelegate next, ILogger<CorrelationIdMiddleware> logger)
 {
     public const string HeaderName = "X-Correlation-Id";
     public const string ItemKey = "Nexus.CorrelationId";
@@ -31,7 +32,10 @@ public sealed class CorrelationIdMiddleware(RequestDelegate next)
             return Task.CompletedTask;
         });
 
-        await next(context);
+        using (logger.BeginScope(new Dictionary<string, object?> { ["CorrelationId"] = correlationId }))
+        {
+            await next(context);
+        }
     }
 }
 
@@ -55,31 +59,166 @@ public sealed class SecurityHeadersMiddleware(RequestDelegate next)
 }
 
 /// <summary>
-/// Resolves and validates tenant context strictly from authenticated JWT claims and server-side membership records.
-/// Rejects tenant header spoofing, revoked sessions, locked/disabled users, and suspended tenants.
+/// Resolves and validates tenant context strictly from authenticated JWT claims, OAuth 2.0 service principals,
+/// scoped API keys, and server-side membership records.
+/// Rejects tenant header spoofing, revoked sessions/clients/keys, locked/disabled users, and suspended tenants.
 /// </summary>
 public sealed class TenantContextMiddleware(RequestDelegate next, ILogger<TenantContextMiddleware> logger)
 {
+    public const string ApiKeyHeaderName = "X-Api-Key";
+
     public async Task InvokeAsync(
         HttpContext context,
         ICurrentUser currentUser,
         ITenantContext tenantContext,
         ITenantAccessValidator tenantValidator,
-        IUserDirectoryReader userDirectory)
+        IUserDirectoryReader userDirectory,
+        IServicePrincipalValidator serviceValidator)
     {
+        // 1. Optional scoped API key authentication when no Bearer JWT authenticated the request
         if (!currentUser.IsAuthenticated)
         {
-            await next(context);
+            var rawApiKey = context.Request.Headers[ApiKeyHeaderName].FirstOrDefault()?.Trim();
+            if (!string.IsNullOrWhiteSpace(rawApiKey))
+            {
+                var keyRes = await serviceValidator.ValidateApiKeyAsync(rawApiKey, context.RequestAborted);
+                if (!keyRes.IsValid)
+                {
+                    await WriteProblemAsync(context, Error.Unauthorized("AUTH_INVALID_API_KEY", keyRes.FailureReason ?? "API key is invalid or revoked."));
+                    return;
+                }
+
+                var claims = new List<Claim>
+                {
+                    new("sub", keyRes.ClientDbId!.Value.ToString("D")),
+                    new("client_id", keyRes.ClientId ?? "api-key"),
+                    new("scope", "service"),
+                    new("auth_method", "api_key")
+                };
+
+                if (keyRes.BoundTenantId.HasValue)
+                {
+                    claims.Add(new Claim("tid", keyRes.BoundTenantId.Value.ToString("D")));
+                }
+
+                foreach (var scp in keyRes.AllowedScopes)
+                {
+                    claims.Add(new Claim("scp", scp));
+                }
+
+                context.User = new ClaimsPrincipal(new ClaimsIdentity(claims, "ApiKey"));
+            }
+            else
+            {
+                await next(context);
+                return;
+            }
+        }
+
+        // 2. Service-to-service OAuth 2.0 Client Credentials / Scoped API Key path
+        if (currentUser.IsServicePrincipal)
+        {
+            var authMethod = context.User.FindFirstValue("auth_method");
+            Guid? boundTenantId = currentUser.TenantId;
+
+            if (!string.Equals(authMethod, "api_key", StringComparison.OrdinalIgnoreCase))
+            {
+                var clientId = currentUser.ServiceClientId;
+                if (string.IsNullOrWhiteSpace(clientId))
+                {
+                    await WriteProblemAsync(context, Error.Unauthorized("AUTH_INVALID_SERVICE_TOKEN", "Service token is missing client_id."));
+                    return;
+                }
+
+                var clientStatus = await serviceValidator.ValidateServiceClientAsync(clientId, context.RequestAborted);
+                if (!clientStatus.IsValid)
+                {
+                    await WriteProblemAsync(context, Error.Unauthorized("AUTH_SERVICE_CLIENT_REVOKED", clientStatus.FailureReason ?? "Service client is revoked or inactive."));
+                    return;
+                }
+
+                // Enforce live intersection between JWT token scopes and current client AllowedScopes
+                var activeScopes = clientStatus.AllowedScopes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var tokenScopes = currentUser.GrantedScopes.Where(s => activeScopes.Contains(s)).ToList();
+                var filteredClaims = context.User.Claims.Where(c => c.Type != "scp").ToList();
+                filteredClaims.AddRange(tokenScopes.Select(s => new Claim("scp", s)));
+                context.User = new ClaimsPrincipal(new ClaimsIdentity(filteredClaims, context.User.Identity?.AuthenticationType ?? "Bearer"));
+
+                if (clientStatus.BoundTenantId.HasValue)
+                {
+                    if (boundTenantId.HasValue && boundTenantId.Value != clientStatus.BoundTenantId.Value)
+                    {
+                        await WriteProblemAsync(context, Error.Forbidden("TENANT_SPOOFING_DETECTED", "Service client is bound to a different tenant."));
+                        return;
+                    }
+                    boundTenantId = clientStatus.BoundTenantId.Value;
+                }
+            }
+
+            // Anti-spoofing check on X-Tenant-Id header for service principals
+            var svcHeader = context.Request.Headers["X-Tenant-Id"].FirstOrDefault()
+                            ?? context.Request.Headers["Tenant-ID"].FirstOrDefault();
+
+            if (!string.IsNullOrWhiteSpace(svcHeader))
+            {
+                if (!Guid.TryParse(svcHeader, out var requestedTid))
+                {
+                    await WriteProblemAsync(context, Error.Validation("INVALID_TENANT_HEADER", "Invalid X-Tenant-Id header format."));
+                    return;
+                }
+
+                if (boundTenantId.HasValue && boundTenantId.Value != requestedTid)
+                {
+                    await WriteProblemAsync(context, Error.Forbidden("TENANT_SPOOFING_DETECTED", "Service principal cannot override its bound tenant context."));
+                    return;
+                }
+
+                boundTenantId = requestedTid;
+            }
+
+            if (boundTenantId.HasValue)
+            {
+                var tenantInfo = await tenantValidator.ValidateMembershipAsync(Guid.Empty, boundTenantId.Value, context.RequestAborted);
+                if (tenantInfo is null)
+                {
+                    await WriteProblemAsync(context, Error.NotFound("TENANT_NOT_FOUND", "Target tenant was not found."));
+                    return;
+                }
+
+                if (tenantInfo.TenantStatus == TenantLifecycleStatus.Suspended)
+                {
+                    await WriteProblemAsync(context, Error.Forbidden("TENANT_SUSPENDED", "This tenant is currently suspended. Business operations are disabled."));
+                    return;
+                }
+
+                if (tenantInfo.TenantStatus == TenantLifecycleStatus.Archived)
+                {
+                    await WriteProblemAsync(context, Error.Forbidden("TENANT_ARCHIVED", "This tenant has been archived."));
+                    return;
+                }
+
+                tenantContext.SetTenant(tenantInfo.TenantId);
+            }
+
+            using (logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["ActorType"] = "Service",
+                ["ServiceClientId"] = currentUser.ServiceClientId ?? "unknown",
+                ["TenantId"] = tenantContext.TenantId?.ToString("D") ?? "platform"
+            }))
+            {
+                await next(context);
+            }
             return;
         }
 
+        // 3. Human user authentication & tenancy verification path
         if (!currentUser.UserId.HasValue)
         {
             await WriteProblemAsync(context, Error.Unauthorized("AUTH_INVALID_TOKEN", "Authenticated principal is missing subject identifier."));
             return;
         }
 
-        // Verify user account is active & not locked out
         var user = await userDirectory.GetByIdAsync(currentUser.UserId.Value, context.RequestAborted);
         if (user is null || !user.IsActive || user.IsLockedOut)
         {
@@ -87,7 +226,6 @@ public sealed class TenantContextMiddleware(RequestDelegate next, ILogger<Tenant
             return;
         }
 
-        // Verify session has not been revoked
         if (currentUser.SessionId.HasValue)
         {
             var sessionActive = await userDirectory.IsSessionActiveAsync(currentUser.UserId.Value, currentUser.SessionId.Value, context.RequestAborted);
@@ -98,7 +236,6 @@ public sealed class TenantContextMiddleware(RequestDelegate next, ILogger<Tenant
             }
         }
 
-        // Anti-spoofing check: if a client sends X-Tenant-Id header that disagrees with the authenticated tenant claim, reject immediately!
         var spoofHeader = context.Request.Headers["X-Tenant-Id"].FirstOrDefault()
                           ?? context.Request.Headers["Tenant-ID"].FirstOrDefault();
 
@@ -122,7 +259,6 @@ public sealed class TenantContextMiddleware(RequestDelegate next, ILogger<Tenant
             }
         }
 
-        // Bind verified tenant context for tenant-scoped tokens
         if (currentUser.TenantId.HasValue)
         {
             var access = await tenantValidator.ValidateMembershipAsync(
@@ -138,7 +274,6 @@ public sealed class TenantContextMiddleware(RequestDelegate next, ILogger<Tenant
                 return;
             }
 
-            // Allow auth logout/switch/me endpoints even if tenant is suspended, block business endpoints
             var path = context.Request.Path.Value ?? string.Empty;
             var isAuthEndpoint = path.StartsWith("/api/v1/auth", StringComparison.OrdinalIgnoreCase);
 
@@ -161,7 +296,15 @@ public sealed class TenantContextMiddleware(RequestDelegate next, ILogger<Tenant
             tenantContext.SetTenant(access.TenantId);
         }
 
-        await next(context);
+        using (logger.BeginScope(new Dictionary<string, object?>
+        {
+            ["ActorType"] = currentUser.IsPlatformUser ? "PlatformUser" : "TenantUser",
+            ["UserId"] = currentUser.UserId.Value.ToString("D"),
+            ["TenantId"] = tenantContext.TenantId?.ToString("D") ?? "platform"
+        }))
+        {
+            await next(context);
+        }
     }
 
     private static async Task WriteProblemAsync(HttpContext context, Error error)
@@ -261,7 +404,6 @@ public sealed class IdempotencyMiddleware(RequestDelegate next)
             return;
         }
 
-        // Capture response for replay
         var originalBody = context.Response.Body;
         await using var buffer = new MemoryStream();
         context.Response.Body = buffer;
@@ -274,7 +416,6 @@ public sealed class IdempotencyMiddleware(RequestDelegate next)
 
             if (context.Response.StatusCode >= 500)
             {
-                // Do not permanently lock key on server error so clients may safely retry
                 messagingDb.IdempotencyRecords.Remove(record);
                 await messagingDb.SaveChangesAsync(context.RequestAborted);
             }

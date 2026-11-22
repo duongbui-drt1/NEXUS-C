@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Nexus.BuildingBlocks.Infrastructure;
+using Nexus.BuildingBlocks.Observability;
 using Nexus.Modules.Identity.Domain;
 using Nexus.Modules.Identity.Infrastructure;
 using Nexus.SharedKernel.Context;
@@ -28,7 +29,7 @@ public sealed class JwtOptions
 }
 
 public sealed record LoginRequest(string Email, string Password, Guid? TenantId = null);
-public sealed record RefreshRequest(string RefreshToken);
+public sealed record RefreshRequest(string? RefreshToken = null);
 public sealed record SwitchTenantRequest(Guid TenantId);
 public sealed record ChangePasswordRequest(string CurrentPassword, string NewPassword);
 public sealed record ResetPasswordRequest(string Email, string ResetToken, string NewPassword);
@@ -84,6 +85,14 @@ public interface ITokenGenerator
         Guid? tenantId,
         string scope,
         TimeSpan? overrideLifetime = null);
+
+    (string Token, DateTimeOffset ExpiresAt) GenerateServiceAccessToken(
+        Guid clientDbId,
+        string clientId,
+        string? applicationCode,
+        Guid? tenantId,
+        IReadOnlyList<string> scopes,
+        TimeSpan? overrideLifetime = null);
 }
 
 public sealed class JwtTokenGenerator(IOptions<JwtOptions> options, ISystemClock clock) : ITokenGenerator
@@ -117,6 +126,60 @@ public sealed class JwtTokenGenerator(IOptions<JwtOptions> options, ISystemClock
         if (tenantId.HasValue)
         {
             claims.Add(new Claim("tid", tenantId.Value.ToString("D")));
+        }
+
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(cfg.SigningKey));
+        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+        var jwt = new JwtSecurityToken(
+            issuer: cfg.Issuer,
+            audience: cfg.Audience,
+            claims: claims,
+            notBefore: now.UtcDateTime,
+            expires: expires.UtcDateTime,
+            signingCredentials: creds);
+
+        return (new JwtSecurityTokenHandler().WriteToken(jwt), expires);
+    }
+
+    public (string Token, DateTimeOffset ExpiresAt) GenerateServiceAccessToken(
+        Guid clientDbId,
+        string clientId,
+        string? applicationCode,
+        Guid? tenantId,
+        IReadOnlyList<string> scopes,
+        TimeSpan? overrideLifetime = null)
+    {
+        var cfg = options.Value;
+        if (string.IsNullOrWhiteSpace(cfg.SigningKey) || cfg.SigningKey.Length < 32)
+        {
+            throw new InvalidOperationException("Jwt:SigningKey must be configured with at least 32 characters.");
+        }
+
+        var now = clock.UtcNow;
+        var expires = now.Add(overrideLifetime ?? TimeSpan.FromMinutes(10));
+
+        var claims = new List<Claim>
+        {
+            new(JwtRegisteredClaimNames.Sub, clientDbId.ToString("D")),
+            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString("D")),
+            new("client_id", clientId),
+            new("scope", "service")
+        };
+
+        if (!string.IsNullOrWhiteSpace(applicationCode))
+        {
+            claims.Add(new Claim("app_code", applicationCode));
+        }
+
+        if (tenantId.HasValue)
+        {
+            claims.Add(new Claim("tid", tenantId.Value.ToString("D")));
+        }
+
+        foreach (var scp in scopes)
+        {
+            claims.Add(new Claim("scp", scp));
         }
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(cfg.SigningKey));
@@ -422,6 +485,16 @@ public sealed class AuthService(
             return Error.Forbidden("TENANT_MEMBERSHIP_REQUIRED", "You do not have an active membership in the target tenant.");
         }
 
+        if (access.TenantStatus == TenantLifecycleStatus.Suspended)
+        {
+            return Error.Forbidden("TENANT_SUSPENDED", "Cannot switch into a suspended tenant.");
+        }
+
+        if (access.TenantStatus == TenantLifecycleStatus.Archived)
+        {
+            return Error.Forbidden("TENANT_ARCHIVED", "Cannot switch into an archived tenant.");
+        }
+
         var user = await userManager.FindByIdAsync(currentUser.UserId.Value.ToString("D"));
         if (user is null || !user.IsActive)
         {
@@ -435,6 +508,15 @@ public sealed class AuthService(
             return Error.Unauthorized("AUTH_SESSION_REVOKED", "Session is revoked.");
         }
 
+        // Revoke active refresh tokens bound to the previous tenant context so stale tenant refresh tokens cannot be replayed
+        var priorTokens = await db.RefreshTokens
+            .Where(t => t.SessionId == session.Id && t.RevokedAt == null)
+            .ToListAsync(ct);
+        foreach (var prior in priorTokens)
+        {
+            prior.Revoke("TenantSwitched", now);
+        }
+
         session.Touch(now, request.TenantId);
         var refreshLifetime = TimeSpan.FromDays(jwtOptions.Value.RefreshTokenDays);
         var newRawToken = CryptoHelper.GenerateSecureToken(64);
@@ -443,6 +525,10 @@ public sealed class AuthService(
 
         db.RefreshTokens.Add(replacement);
         await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "identity.switch_tenant", "UserSession", session.Id.ToString("D"), request.TenantId, "Success",
+            AfterState: new { TargetTenantId = request.TenantId }), ct);
 
         var (accessToken, accessExp) = tokenGenerator.GenerateAccessToken(user, session.Id, request.TenantId, "tenant");
         return new AuthTokenResponse(

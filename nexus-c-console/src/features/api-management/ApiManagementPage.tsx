@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Play, RefreshCw } from 'lucide-react';
-import type { OpenApiOperation } from '../../types/api';
+import { KeyRound, Play, Plus, RefreshCw, RotateCw, Trash2 } from 'lucide-react';
+import type { OpenApiOperation, WebhookDto } from '../../types/api';
 import { PageHeader } from '../../components/layout/PageLayout';
-import { Badge, ErrorState, LoadingState, NotAvailablePanel, useToast } from '../../components/feedback/Feedback';
+import { Badge, EmptyState, ErrorState, LoadingState, NotAvailablePanel, useToast } from '../../components/feedback/Feedback';
+import { ConfirmDialog, Dialog } from '../../components/dialogs/Dialog';
 import { apiRequest } from '../../services/api/client';
-import { integrationsApi, systemApi } from '../../services/api/modules/platform.api';
+import { apiManagementApi, integrationsApi, systemApi } from '../../services/api/modules/platform.api';
 import { queryKeys } from '../../services/api/query-keys';
 import { useAuth } from '../../services/auth/AuthContext';
 import { getErrorMessage } from '../../services/api/errors';
@@ -36,7 +37,11 @@ export default function ApiManagementPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const auth = useAuth();
+  const queryClient = useQueryClient();
   const { notify } = useToast();
+
+  const canManageApi = auth.hasPermission('platform.api.manage');
+  const canManageIntegrations = auth.hasPermission('platform.integrations.manage');
 
   const activeTab: ApiTab =
     TAB_ROUTES.find((t) => location.pathname === t.path)?.id ??
@@ -48,10 +53,27 @@ export default function ApiManagementPage() {
   const [tryResult, setTryResult] = useState<string | null>(null);
   const [tryLoading, setTryLoading] = useState(false);
 
-  // Webhook form state
+  // One-time secret reveal dialog (never persisted to localStorage)
+  const [revealedSecret, setRevealedSecret] = useState<{ title: string; secret: string } | null>(null);
+
+  // Service client creation form
+  const [clientId, setClientId] = useState('');
+  const [clientName, setClientName] = useState('');
+  const [clientAppCode, setClientAppCode] = useState('NEXUS_F');
+  const [clientScopes, setClientScopes] = useState('platform.organizations.read, platform.subscriptions.read');
+  const [revokeClientId, setRevokeClientId] = useState<string | null>(null);
+
+  // API key creation form
+  const [keyName, setKeyName] = useState('');
+  const [keyScopes, setKeyScopes] = useState('platform.organizations.read');
+  const [revokeKeyId, setRevokeKeyId] = useState<string | null>(null);
+
+  // Webhook form & selection state
   const [whEventType, setWhEventType] = useState('platform.tenant.created.v1');
   const [whUrl, setWhUrl] = useState('');
   const [whSecretRef, setWhSecretRef] = useState('vault://nexus/webhooks/signing-key');
+  const [selectedWebhook, setSelectedWebhook] = useState<WebhookDto | null>(null);
+  const [deleteWebhookId, setDeleteWebhookId] = useState<string | null>(null);
 
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
@@ -63,6 +85,34 @@ export default function ApiManagementPage() {
     queryKey: queryKeys.openapi,
     queryFn: ({ signal }) => systemApi.getOpenApiSpec(signal),
     staleTime: 300_000,
+    retry: false,
+  });
+
+  const clientsQuery = useQuery({
+    queryKey: queryKeys.apiClients,
+    queryFn: ({ signal }) => apiManagementApi.listClients(signal),
+    enabled: activeTab === 'clients' || activeTab === 'overview',
+    retry: false,
+  });
+
+  const keysQuery = useQuery({
+    queryKey: queryKeys.apiKeys,
+    queryFn: ({ signal }) => apiManagementApi.listKeys(signal),
+    enabled: activeTab === 'keys' || activeTab === 'overview',
+    retry: false,
+  });
+
+  const webhooksQuery = useQuery({
+    queryKey: queryKeys.webhooks,
+    queryFn: ({ signal }) => integrationsApi.listWebhooks(signal),
+    enabled: activeTab === 'webhooks' && Boolean(auth.tenantId),
+    retry: false,
+  });
+
+  const deliveriesQuery = useQuery({
+    queryKey: queryKeys.webhookDeliveries(selectedWebhook?.id ?? ''),
+    queryFn: ({ signal }) => integrationsApi.listWebhookDeliveries(selectedWebhook!.id, signal),
+    enabled: activeTab === 'webhooks' && Boolean(selectedWebhook?.id),
     retry: false,
   });
 
@@ -96,6 +146,88 @@ export default function ApiManagementPage() {
     );
   }, [endpoints, filter]);
 
+  const createClientMutation = useMutation({
+    mutationFn: () =>
+      apiManagementApi.createClient({
+        clientId: clientId.trim(),
+        name: clientName.trim(),
+        applicationCode: clientAppCode.trim() || null,
+        allowedScopes: clientScopes.split(',').map((s) => s.trim()).filter(Boolean),
+      }),
+    onSuccess: (res) => {
+      setClientId('');
+      setClientName('');
+      setRevealedSecret({
+        title: `Client Secret cho ${res.client.clientId} (chỉ hiển thị 1 lần)`,
+        secret: res.clientSecret,
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apiClients });
+    },
+    onError: (err) => notify(getErrorMessage(err), 'danger'),
+  });
+
+  const rotateClientMutation = useMutation({
+    mutationFn: (id: string) => apiManagementApi.rotateClientSecret(id),
+    onSuccess: (res) => {
+      setRevealedSecret({
+        title: `Secret mới cho ${res.client.clientId} (chỉ hiển thị 1 lần)`,
+        secret: res.clientSecret,
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apiClients });
+    },
+    onError: (err) => notify(getErrorMessage(err), 'danger'),
+  });
+
+  const revokeClientMutation = useMutation({
+    mutationFn: (id: string) => apiManagementApi.revokeClient(id),
+    onSuccess: () => {
+      notify('Đã thu hồi Service Client thành công.', 'success');
+      setRevokeClientId(null);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apiClients });
+    },
+    onError: (err) => notify(getErrorMessage(err), 'danger'),
+  });
+
+  const createKeyMutation = useMutation({
+    mutationFn: () =>
+      apiManagementApi.createKey({
+        name: keyName.trim(),
+        allowedScopes: keyScopes.split(',').map((s) => s.trim()).filter(Boolean),
+        tenantId: auth.tenantId,
+      }),
+    onSuccess: (res) => {
+      setKeyName('');
+      setRevealedSecret({
+        title: `API Key "${res.apiKey.name}" (chỉ hiển thị 1 lần)`,
+        secret: res.rawApiKey,
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys });
+    },
+    onError: (err) => notify(getErrorMessage(err), 'danger'),
+  });
+
+  const rotateKeyMutation = useMutation({
+    mutationFn: (id: string) => apiManagementApi.rotateKey(id),
+    onSuccess: (res) => {
+      setRevealedSecret({
+        title: `API Key mới cho "${res.apiKey.name}" (chỉ hiển thị 1 lần)`,
+        secret: res.rawApiKey,
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys });
+    },
+    onError: (err) => notify(getErrorMessage(err), 'danger'),
+  });
+
+  const revokeKeyMutation = useMutation({
+    mutationFn: (id: string) => apiManagementApi.revokeKey(id),
+    onSuccess: () => {
+      notify('Đã thu hồi API Key.', 'success');
+      setRevokeKeyId(null);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys });
+    },
+    onError: (err) => notify(getErrorMessage(err), 'danger'),
+  });
+
   const registerWebhook = useMutation({
     mutationFn: () =>
       integrationsApi.registerWebhook({
@@ -106,6 +238,40 @@ export default function ApiManagementPage() {
     onSuccess: (wh) => {
       notify(`Đã đăng ký webhook cho sự kiện ${wh.eventType}.`, 'success');
       setWhUrl('');
+      void queryClient.invalidateQueries({ queryKey: queryKeys.webhooks });
+    },
+    onError: (err) => notify(getErrorMessage(err), 'danger'),
+  });
+
+  const toggleWebhookMutation = useMutation({
+    mutationFn: ({ id, active }: { id: string; active: boolean }) =>
+      active ? integrationsApi.enableWebhook(id) : integrationsApi.disableWebhook(id),
+    onSuccess: () => {
+      notify('Đã cập nhật trạng thái Webhook.', 'success');
+      void queryClient.invalidateQueries({ queryKey: queryKeys.webhooks });
+    },
+    onError: (err) => notify(getErrorMessage(err), 'danger'),
+  });
+
+  const rotateWebhookSecretMutation = useMutation({
+    mutationFn: (id: string) => integrationsApi.rotateWebhookSecret(id),
+    onSuccess: (res) => {
+      setRevealedSecret({
+        title: `Signing Secret mới (v${res.webhook.secretVersion ?? 2}) cho Webhook (chỉ hiển thị 1 lần)`,
+        secret: res.signingSecret,
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.webhooks });
+    },
+    onError: (err) => notify(getErrorMessage(err), 'danger'),
+  });
+
+  const deleteWebhookMutation = useMutation({
+    mutationFn: (id: string) => integrationsApi.deleteWebhook(id),
+    onSuccess: () => {
+      notify('Đã xóa Webhook.', 'success');
+      setDeleteWebhookId(null);
+      setSelectedWebhook(null);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.webhooks });
     },
     onError: (err) => notify(getErrorMessage(err), 'danger'),
   });
@@ -128,7 +294,7 @@ export default function ApiManagementPage() {
     <div>
       <PageHeader
         title="API Management"
-        subtitle="Kiểm soát đặc tả OpenAPI thực tế, trạng thái API, Webhooks và tích hợp Gateway của NEXUS C."
+        subtitle="Quản lý OpenAPI thực tế, OAuth 2.0 Service Clients (NEXUS F/E/M), Scoped API Keys và Webhooks của NEXUS C."
         breadcrumbs={[{ label: 'Overview', to: '/overview' }, { label: 'API Management' }]}
         actions={
           <button
@@ -137,6 +303,8 @@ export default function ApiManagementPage() {
             onClick={() => {
               void healthQuery.refetch();
               void openapiQuery.refetch();
+              void clientsQuery.refetch();
+              void keysQuery.refetch();
             }}
           >
             <RefreshCw size={14} /> Làm mới
@@ -160,47 +328,47 @@ export default function ApiManagementPage() {
       </div>
 
       {activeTab === 'overview' && (
-        <div>
-          <div className="metric-grid">
-            <div className="metric-box">
-              <div className="metric-label">
-                <span>API Readiness</span>
-                <Badge variant={healthQuery.data?.ready.healthy ? 'success' : 'danger'}>
-                  {healthQuery.data?.ready.healthy ? 'Healthy' : 'Unavailable'}
-                </Badge>
-              </div>
-              <div className="metric-value">{healthQuery.data?.ready.healthy ? 'Online' : 'Offline'}</div>
-              <div className="metric-meta">Kiểm tra lúc: {formatDateTime(healthQuery.data?.checkedAt)}</div>
+        <div className="metric-grid">
+          <div className="metric-box">
+            <div className="metric-label">
+              <span>API Readiness</span>
+              <Badge variant={healthQuery.data?.ready.healthy ? 'success' : 'danger'}>
+                {healthQuery.data?.ready.healthy ? 'Healthy' : 'Unavailable'}
+              </Badge>
             </div>
+            <div className="metric-value">{healthQuery.data?.ready.healthy ? 'Online' : 'Offline'}</div>
+            <div className="metric-meta">Kiểm tra lúc: {formatDateTime(healthQuery.data?.checkedAt)}</div>
+          </div>
 
-            <div className="metric-box">
-              <div className="metric-label">
-                <span>OpenAPI Specification</span>
-                <Badge variant="info">{openapiQuery.data?.openapi ?? '3.x'}</Badge>
-              </div>
-              <div className="metric-value">{openapiQuery.data?.info?.version ?? 'v1'}</div>
-              <div className="metric-meta">{openapiQuery.data?.info?.title ?? '/openapi/v1.json'}</div>
+          <div className="metric-box">
+            <div className="metric-label">
+              <span>Registered Endpoints</span>
+              <Badge variant="info">{openapiQuery.data?.info?.version ?? 'v1'}</Badge>
             </div>
+            <div className="metric-value">{openapiQuery.isLoading ? '…' : endpoints.length}</div>
+            <div className="metric-meta">Đọc trực tiếp từ /openapi/v1.json</div>
+          </div>
 
-            <div className="metric-box">
-              <div className="metric-label">
-                <span>Registered Endpoints</span>
-                <Badge variant="neutral">Live Spec</Badge>
-              </div>
-              <div className="metric-value">{openapiQuery.isLoading ? '…' : endpoints.length}</div>
-              <div className="metric-meta">Đọc trực tiếp từ /openapi/v1.json</div>
+          <div className="metric-box">
+            <div className="metric-label">
+              <span>Active Service Clients</span>
+              <Badge variant="success">OAuth 2.0</Badge>
             </div>
+            <div className="metric-value">
+              {clientsQuery.isLoading ? '…' : (clientsQuery.data?.filter((c) => c.isActive).length ?? 0)}
+            </div>
+            <div className="metric-meta">POST /api/v1/auth/token (client_credentials)</div>
+          </div>
 
-            <div className="metric-box">
-              <div className="metric-label">
-                <span>Request Volume / Latency / Error Rate</span>
-                <Badge variant="warning">Not Available</Badge>
-              </div>
-              <div className="metric-value" style={{ fontSize: 15, color: 'var(--color-text-muted)' }}>
-                Chưa có Metrics API
-              </div>
-              <div className="metric-meta">Backend xuất OpenTelemetry OTLP; chưa có REST summary endpoint</div>
+          <div className="metric-box">
+            <div className="metric-label">
+              <span>Active Scoped API Keys</span>
+              <Badge variant="neutral">Hashed</Badge>
             </div>
+            <div className="metric-value">
+              {keysQuery.isLoading ? '…' : (keysQuery.data?.filter((k) => k.isActive).length ?? 0)}
+            </div>
+            <div className="metric-meta">Xác thực SHA-256 một chiều, giới hạn scope</div>
           </div>
         </div>
       )}
@@ -224,9 +392,6 @@ export default function ApiManagementPage() {
             ) : openapiQuery.error ? (
               <div className="panel-body">
                 <ErrorState error={openapiQuery.error} onRetry={() => void openapiQuery.refetch()} />
-                <p className="form-hint" style={{ marginTop: 8 }}>
-                  Lưu ý: Trên môi trường Production, hãy bật <span className="mono">OpenApi:Enabled=true</span> ở mạng nội bộ nếu cần sử dụng API Explorer.
-                </p>
               </div>
             ) : (
               <div style={{ maxHeight: 540, overflowY: 'auto' }}>
@@ -251,13 +416,7 @@ export default function ApiManagementPage() {
                         <td>
                           <Badge
                             variant={
-                              ep.method === 'GET'
-                                ? 'info'
-                                : ep.method === 'DELETE'
-                                  ? 'danger'
-                                  : ep.method === 'POST'
-                                    ? 'success'
-                                    : 'warning'
+                              ep.method === 'GET' ? 'info' : ep.method === 'DELETE' ? 'danger' : ep.method === 'POST' ? 'success' : 'warning'
                             }
                           >
                             {ep.method}
@@ -290,7 +449,7 @@ export default function ApiManagementPage() {
             <div className="panel-body">
               {!selectedEndpoint ? (
                 <p style={{ color: 'var(--color-text-muted)', margin: 0 }}>
-                  Chọn một endpoint ở bảng bên trái để xem tham số, schema và mã phản hồi từ OpenAPI spec thực tế. Các thao tác ghi/xóa (POST/PUT/DELETE) bị khóa thực thi trực tiếp trong Explorer để tránh phá hủy dữ liệu.
+                  Chọn một endpoint ở bảng bên trái để xem chi tiết từ OpenAPI spec thực tế.
                 </p>
               ) : (
                 <div>
@@ -298,47 +457,10 @@ export default function ApiManagementPage() {
                     <Badge variant="info">{selectedEndpoint.method}</Badge>
                     <span className="mono" style={{ fontWeight: 600 }}>{selectedEndpoint.path}</span>
                   </div>
-
-                  {selectedEndpoint.operation.parameters && selectedEndpoint.operation.parameters.length > 0 && (
-                    <div style={{ marginBottom: 12 }}>
-                      <div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: 6 }}>Parameters</div>
-                      {selectedEndpoint.operation.parameters.map((p) => (
-                        <div key={`${p.in}-${p.name}`} className="mono" style={{ fontSize: 12, padding: '2px 0' }}>
-                          {p.name} ({p.in}){p.required ? ' *' : ''}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {selectedEndpoint.operation.responses && (
-                    <div style={{ marginBottom: 12 }}>
-                      <div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: 6 }}>Responses</div>
-                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                        {Object.entries(selectedEndpoint.operation.responses).map(([code, r]) => (
-                          <Badge key={code} variant="neutral">{code} {r.description ?? ''}</Badge>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
                   {tryResult && (
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: 6 }}>Kết quả GET trực tiếp</div>
-                      <pre
-                        className="mono"
-                        style={{
-                          background: 'var(--color-surface-subtle)',
-                          border: '1px solid var(--color-border)',
-                          borderRadius: 4,
-                          padding: 10,
-                          maxHeight: 280,
-                          overflow: 'auto',
-                          margin: 0,
-                        }}
-                      >
-                        {tryResult}
-                      </pre>
-                    </div>
+                    <pre className="mono" style={{ background: 'var(--color-surface-subtle)', border: '1px solid var(--color-border)', borderRadius: 4, padding: 10, maxHeight: 280, overflow: 'auto', margin: 0 }}>
+                      {tryResult}
+                    </pre>
                   )}
                 </div>
               )}
@@ -348,26 +470,193 @@ export default function ApiManagementPage() {
       )}
 
       {activeTab === 'clients' && (
-        <NotAvailablePanel
-          title="API Clients Management"
-          endpoint="GET/POST /api/v1/platform/api-clients"
-          description="NEXUS C Backend Foundation hiện chưa triển khai bảng và API quản lý OAuth/Machine API Clients. Giao diện sẽ được kích hoạt ngay khi backend bổ sung contract tương ứng."
-        />
+        <div className="grid-2">
+          <div className="panel">
+            <div className="panel-header">
+              <h2 className="panel-title">OAuth 2.0 Service Clients</h2>
+            </div>
+            {clientsQuery.isLoading ? (
+              <LoadingState />
+            ) : clientsQuery.error ? (
+              <div className="panel-body"><ErrorState error={clientsQuery.error} onRetry={() => void clientsQuery.refetch()} /></div>
+            ) : !clientsQuery.data?.length ? (
+              <EmptyState title="Chưa có Service Client" description="Đăng ký client_credentials cho NEXUS F, E hoặc M ở biểu mẫu bên cạnh." />
+            ) : (
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Client ID</th>
+                    <th>App</th>
+                    <th>Status</th>
+                    <th>Scopes</th>
+                    <th>Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {clientsQuery.data.map((c) => (
+                    <tr key={c.id}>
+                      <td>
+                        <div className="mono" style={{ fontWeight: 600 }}>{c.clientId}</div>
+                        <div className="form-hint">{c.name} · {c.secretPrefix}…</div>
+                      </td>
+                      <td className="mono">{c.applicationCode ?? '—'}</td>
+                      <td>
+                        <Badge variant={c.isActive ? 'success' : 'danger'}>{c.isActive ? 'Active' : 'Revoked'}</Badge>
+                      </td>
+                      <td className="mono" style={{ fontSize: 11.5 }}>{c.allowedScopes.join(', ')}</td>
+                      <td>
+                        {canManageApi && c.isActive && (
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button type="button" className="btn btn-sm" onClick={() => rotateClientMutation.mutate(c.id)}>
+                              <RotateCw size={12} /> Rotate
+                            </button>
+                            <button type="button" className="btn btn-sm btn-danger" onClick={() => setRevokeClientId(c.id)}>
+                              Revoke
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="panel">
+            <div className="panel-header">
+              <h2 className="panel-title">Đăng ký Service Client mới</h2>
+            </div>
+            <div className="panel-body">
+              {!canManageApi ? (
+                <div className="alert alert-info">Cần quyền <span className="mono">platform.api.manage</span> để tạo hoặc xoay vòng Service Client.</div>
+              ) : (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    createClientMutation.mutate();
+                  }}
+                >
+                  <div className="form-field">
+                    <label className="form-label" htmlFor="sc-id">Client ID</label>
+                    <input id="sc-id" className="input mono" placeholder="nexus-f-service" value={clientId} onChange={(e) => setClientId(e.target.value)} required />
+                  </div>
+                  <div className="form-field">
+                    <label className="form-label" htmlFor="sc-name">Tên hiển thị</label>
+                    <input id="sc-name" className="input" placeholder="NEXUS Finance Backend" value={clientName} onChange={(e) => setClientName(e.target.value)} required />
+                  </div>
+                  <div className="form-field">
+                    <label className="form-label" htmlFor="sc-app">Application Code</label>
+                    <select id="sc-app" className="select" value={clientAppCode} onChange={(e) => setClientAppCode(e.target.value)}>
+                      <option value="NEXUS_F">NEXUS_F</option>
+                      <option value="NEXUS_E">NEXUS_E</option>
+                      <option value="NEXUS_M">NEXUS_M</option>
+                      <option value="">External Partner</option>
+                    </select>
+                  </div>
+                  <div className="form-field">
+                    <label className="form-label" htmlFor="sc-scopes">Allowed Scopes (phân tách bởi dấu phẩy, cấm wildcard *)</label>
+                    <input id="sc-scopes" className="input mono" value={clientScopes} onChange={(e) => setClientScopes(e.target.value)} required />
+                  </div>
+                  <button type="submit" className="btn btn-primary" disabled={createClientMutation.isPending}>
+                    <Plus size={14} /> {createClientMutation.isPending ? 'Đang tạo...' : 'Tạo Service Client'}
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {activeTab === 'keys' && (
-        <NotAvailablePanel
-          title="API Keys Management"
-          endpoint="GET/POST/DELETE /api/v1/platform/api-keys"
-          description="Backend chưa cung cấp endpoint tạo, xoay vòng hoặc thu hồi API Key. Theo quy tắc bảo mật NEXUS, frontend tuyệt đối không tự sinh khóa giả hay lưu API secret vào localStorage."
-        />
+        <div className="grid-2">
+          <div className="panel">
+            <div className="panel-header">
+              <h2 className="panel-title">Scoped API Keys (SHA-256 Hashed)</h2>
+            </div>
+            {keysQuery.isLoading ? (
+              <LoadingState />
+            ) : keysQuery.error ? (
+              <div className="panel-body"><ErrorState error={keysQuery.error} onRetry={() => void keysQuery.refetch()} /></div>
+            ) : !keysQuery.data?.length ? (
+              <EmptyState title="Chưa có API Key" description="Tạo API Key giới hạn scope ở biểu mẫu bên cạnh." />
+            ) : (
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Tên & Prefix</th>
+                    <th>Status</th>
+                    <th>Scopes</th>
+                    <th>Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {keysQuery.data.map((k) => (
+                    <tr key={k.id}>
+                      <td>
+                        <div style={{ fontWeight: 600 }}>{k.name}</div>
+                        <div className="mono form-hint">{k.keyPrefix}…</div>
+                      </td>
+                      <td>
+                        <Badge variant={k.isActive ? 'success' : 'danger'}>{k.isActive ? 'Active' : 'Revoked'}</Badge>
+                      </td>
+                      <td className="mono" style={{ fontSize: 11.5 }}>{k.allowedScopes.join(', ')}</td>
+                      <td>
+                        {canManageApi && k.isActive && (
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button type="button" className="btn btn-sm" onClick={() => rotateKeyMutation.mutate(k.id)}>
+                              <RotateCw size={12} /> Rotate
+                            </button>
+                            <button type="button" className="btn btn-sm btn-danger" onClick={() => setRevokeKeyId(k.id)}>
+                              Revoke
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="panel">
+            <div className="panel-header">
+              <h2 className="panel-title">Tạo Scoped API Key</h2>
+            </div>
+            <div className="panel-body">
+              {!canManageApi ? (
+                <div className="alert alert-info">Cần quyền <span className="mono">platform.api.manage</span> để tạo hoặc thu hồi API Key.</div>
+              ) : (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    createKeyMutation.mutate();
+                  }}
+                >
+                  <div className="form-field">
+                    <label className="form-label" htmlFor="ak-name">Tên API Key</label>
+                    <input id="ak-name" className="input" placeholder="ERP Sync Reader" value={keyName} onChange={(e) => setKeyName(e.target.value)} required />
+                  </div>
+                  <div className="form-field">
+                    <label className="form-label" htmlFor="ak-scopes">Explicit Permission Scopes</label>
+                    <input id="ak-scopes" className="input mono" value={keyScopes} onChange={(e) => setKeyScopes(e.target.value)} required />
+                  </div>
+                  <button type="submit" className="btn btn-primary" disabled={createKeyMutation.isPending}>
+                    <KeyRound size={14} /> {createKeyMutation.isPending ? 'Đang tạo...' : 'Tạo API Key'}
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {activeTab === 'rate-limits' && (
         <NotAvailablePanel
-          title="Dynamic Rate Limiting Policies"
+          title="Dynamic Per-Client Rate Limiting Policies"
           endpoint="GET/PUT /api/v1/platform/rate-limits"
-          description="NEXUS C Backend hiện áp dụng giới hạn lưu lượng qua cấu hình tĩnh (RateLimiting:PermitLimit & AuthPermitLimit). API quản lý chính sách động theo từng client chưa được triển khai."
+          description="NEXUS C 1.0 áp dụng giới hạn lưu lượng qua ASP.NET Core RateLimiter tĩnh (RateLimiting:PermitLimit & AuthPermitLimit) và metadata RateLimitPerMinute trên từng ServiceClient. Giao diện chỉnh sửa phân tán theo thời gian thực được hoãn sau mốc 1.0."
         />
       )}
 
@@ -375,7 +664,7 @@ export default function ApiManagementPage() {
         <NotAvailablePanel
           title="API Request Telemetry Logs"
           endpoint="GET /api/v1/platform/api-logs"
-          description="NEXUS C Backend hiện ghi log HTTP có cấu trúc qua Serilog và OpenTelemetry (đã lọc bỏ mật khẩu, Authorization header và token). Endpoint truy vấn API logs trực tiếp qua REST chưa được triển khai."
+          description="NEXUS C 1.0 xuất log HTTP có cấu trúc (Serilog + CorrelationId + OpenTelemetry OTLP) sang hệ thống thu thập log tập trung để tránh phình database giao dịch. Không mô phỏng nhật ký giả trên UI."
         />
       )}
 
@@ -383,48 +672,177 @@ export default function ApiManagementPage() {
         <div className="grid-2">
           <div className="panel">
             <div className="panel-header">
-              <h2 className="panel-title">Đăng ký Webhook mới (Backend Live)</h2>
+              <h2 className="panel-title">Đăng ký & Danh sách Webhook</h2>
             </div>
             <div className="panel-body">
               {!auth.tenantId ? (
                 <div className="alert alert-info">
-                  Đăng ký Webhook thuộc phạm vi Tenant (<span className="mono">platform.integrations.manage</span>). Hãy chọn một Tenant ở thanh tiêu đề.
+                  Webhooks thuộc phạm vi Tenant (<span className="mono">platform.integrations.manage</span>). Hãy chọn một Tenant ở thanh tiêu đề.
                 </div>
               ) : (
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    registerWebhook.mutate();
-                  }}
-                >
-                  <div className="form-field">
-                    <label className="form-label" htmlFor="wh-event">Loại sự kiện (EventType)</label>
-                    <input id="wh-event" className="input mono" value={whEventType} onChange={(e) => setWhEventType(e.target.value)} required />
-                  </div>
-                  <div className="form-field">
-                    <label className="form-label" htmlFor="wh-url">Target URL (bắt buộc HTTPS)</label>
-                    <input id="wh-url" type="url" className="input mono" placeholder="https://hooks.partner.example/nexus" value={whUrl} onChange={(e) => setWhUrl(e.target.value)} required />
-                  </div>
-                  <div className="form-field">
-                    <label className="form-label" htmlFor="wh-secret">Signing Secret Reference (vault:// hoặc env://)</label>
-                    <input id="wh-secret" className="input mono" value={whSecretRef} onChange={(e) => setWhSecretRef(e.target.value)} required />
-                    <span className="form-hint">Không nhập secret thô; backend chỉ chấp nhận tham chiếu vault:// hoặc env://.</span>
-                  </div>
-                  <button type="submit" className="btn btn-primary" disabled={registerWebhook.isPending}>
-                    {registerWebhook.isPending ? 'Đang đăng ký...' : 'Đăng ký Webhook'}
-                  </button>
-                </form>
+                <>
+                  {canManageIntegrations && (
+                    <form
+                      style={{ marginBottom: 16 }}
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        registerWebhook.mutate();
+                      }}
+                    >
+                      <div className="form-field">
+                        <label className="form-label" htmlFor="wh-event">Loại sự kiện (EventType)</label>
+                        <input id="wh-event" className="input mono" value={whEventType} onChange={(e) => setWhEventType(e.target.value)} required />
+                      </div>
+                      <div className="form-field">
+                        <label className="form-label" htmlFor="wh-url">Target URL (bắt buộc HTTPS công khai, chống SSRF)</label>
+                        <input id="wh-url" type="url" className="input mono" placeholder="https://hooks.partner.example/nexus" value={whUrl} onChange={(e) => setWhUrl(e.target.value)} required />
+                      </div>
+                      <div className="form-field">
+                        <label className="form-label" htmlFor="wh-secret">Signing Secret Ref (vault:// hoặc env://)</label>
+                        <input id="wh-secret" className="input mono" value={whSecretRef} onChange={(e) => setWhSecretRef(e.target.value)} required />
+                      </div>
+                      <button type="submit" className="btn btn-primary" disabled={registerWebhook.isPending}>
+                        {registerWebhook.isPending ? 'Đang đăng ký...' : 'Đăng ký Webhook'}
+                      </button>
+                    </form>
+                  )}
+
+                  {webhooksQuery.isLoading ? (
+                    <LoadingState />
+                  ) : !webhooksQuery.data?.length ? (
+                    <EmptyState title="Chưa có Webhook" description="Đăng ký Webhook HTTPS mới ở biểu mẫu phía trên." />
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Event / Target</th>
+                          <th>Status</th>
+                          <th>Thao tác</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {webhooksQuery.data.map((w) => (
+                          <tr key={w.id} style={{ cursor: 'pointer' }} onClick={() => setSelectedWebhook(w)}>
+                            <td>
+                              <div className="mono" style={{ fontWeight: 600 }}>{w.eventType}</div>
+                              <div className="mono form-hint">{w.targetUrl}</div>
+                            </td>
+                            <td>
+                              <Badge variant={w.isActive ? 'success' : 'neutral'}>{w.isActive ? 'Active' : 'Disabled'}</Badge>
+                            </td>
+                            <td>
+                              {canManageIntegrations && (
+                                <div style={{ display: 'flex', gap: 4 }} onClick={(e) => e.stopPropagation()}>
+                                  <button type="button" className="btn btn-sm" onClick={() => toggleWebhookMutation.mutate({ id: w.id, active: !w.isActive })}>
+                                    {w.isActive ? 'Tắt' : 'Bật'}
+                                  </button>
+                                  <button type="button" className="btn btn-sm" onClick={() => rotateWebhookSecretMutation.mutate(w.id)}>
+                                    Rotate
+                                  </button>
+                                  <button type="button" className="btn btn-sm btn-danger" aria-label="Xóa webhook" onClick={() => setDeleteWebhookId(w.id)}>
+                                    <Trash2 size={12} />
+                                  </button>
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </>
               )}
             </div>
           </div>
 
-          <NotAvailablePanel
-            title="Webhook List & Delivery History"
-            endpoint="GET /api/v1/platform/integrations/webhooks"
-            description="Backend đã hỗ trợ đăng ký webhook (POST /api/v1/platform/integrations/webhooks), nhưng chưa cung cấp endpoint liệt kê danh sách webhook và lịch sử gửi (delivery history)."
-          />
+          <div className="panel">
+            <div className="panel-header">
+              <h2 className="panel-title">Webhook Delivery History</h2>
+            </div>
+            <div className="panel-body">
+              {!selectedWebhook ? (
+                <p className="form-hint">Chọn một Webhook ở bảng bên trái để xem lịch sử giao nhận (deliveries) và chữ ký HMAC-SHA256.</p>
+              ) : deliveriesQuery.isLoading ? (
+                <LoadingState />
+              ) : !deliveriesQuery.data?.length ? (
+                <EmptyState title="Chưa có lần gửi nào" description={`Webhook ${selectedWebhook.eventType} chưa phát sinh delivery attempt.`} />
+              ) : (
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Status</th>
+                      <th>HTTP</th>
+                      <th>Attempts</th>
+                      <th>Time</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deliveriesQuery.data.map((d) => (
+                      <tr key={d.id}>
+                        <td><Badge variant={d.status === 'Succeeded' ? 'success' : d.status === 'Failed' ? 'danger' : 'warning'}>{d.status}</Badge></td>
+                        <td className="mono">{d.httpStatusCode ?? '—'}</td>
+                        <td className="mono">{d.attemptCount}</td>
+                        <td>{formatDateTime(d.attemptedAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
         </div>
       )}
+
+      <Dialog
+        open={revealedSecret !== null}
+        title={revealedSecret?.title ?? 'Secret'}
+        onClose={() => setRevealedSecret(null)}
+        footer={
+          <button type="button" className="btn btn-primary" onClick={() => setRevealedSecret(null)}>
+            Đã sao chép an toàn — Đóng
+          </button>
+        }
+      >
+        <div className="alert alert-warning" style={{ marginBottom: 12 }}>
+          Secret này được lưu một chiều (hash) trên máy chủ và <strong>không bao giờ hiển thị lại</strong> sau khi bạn đóng hộp thoại này.
+        </div>
+        <pre className="mono" style={{ padding: 12, background: 'var(--color-surface-subtle)', border: '1px solid var(--color-border)', borderRadius: 4, wordBreak: 'break-all' }}>
+          {revealedSecret?.secret}
+        </pre>
+      </Dialog>
+
+      <ConfirmDialog
+        open={revokeClientId !== null}
+        title="Thu hồi OAuth 2.0 Service Client"
+        message="Mọi access token hiện hành và yêu cầu cấp token mới của client này sẽ bị từ chối ngay lập tức."
+        confirmLabel="Thu hồi Client"
+        danger
+        isPending={revokeClientMutation.isPending}
+        onCancel={() => setRevokeClientId(null)}
+        onConfirm={() => { if (revokeClientId) revokeClientMutation.mutate(revokeClientId); }}
+      />
+
+      <ConfirmDialog
+        open={revokeKeyId !== null}
+        title="Thu hồi API Key"
+        message="API Key này sẽ ngừng hoạt động ngay lập tức và không thể khôi phục."
+        confirmLabel="Thu hồi Key"
+        danger
+        isPending={revokeKeyMutation.isPending}
+        onCancel={() => setRevokeKeyId(null)}
+        onConfirm={() => { if (revokeKeyId) revokeKeyMutation.mutate(revokeKeyId); }}
+      />
+
+      <ConfirmDialog
+        open={deleteWebhookId !== null}
+        title="Xóa Webhook Registration"
+        message="Xác nhận xóa vĩnh viễn webhook này và toàn bộ lịch sử gửi đi liên quan?"
+        confirmLabel="Xóa Webhook"
+        danger
+        isPending={deleteWebhookMutation.isPending}
+        onCancel={() => setDeleteWebhookId(null)}
+        onConfirm={() => { if (deleteWebhookId) deleteWebhookMutation.mutate(deleteWebhookId); }}
+      />
     </div>
   );
 }

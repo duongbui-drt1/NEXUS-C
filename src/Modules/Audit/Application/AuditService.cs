@@ -48,10 +48,11 @@ public sealed class AuditService(
         var beforeJson = SensitiveDataRedactor.SanitizeToJson(entry.BeforeState);
         var afterJson = SensitiveDataRedactor.SanitizeToJson(entry.AfterState);
 
+        var targetTenantId = entry.TenantId ?? tenantContext.TenantId;
         var ev = AuditEvent.Create(
             actorUserId: currentUser.UserId,
-            actorEmail: currentUser.Email,
-            tenantId: entry.TenantId ?? tenantContext.TenantId,
+            actorEmail: currentUser.Email ?? currentUser.ServiceClientId,
+            tenantId: targetTenantId,
             action: entry.Action,
             resourceType: entry.ResourceType,
             resourceId: entry.ResourceId,
@@ -65,6 +66,7 @@ public sealed class AuditService(
             afterJson: afterJson,
             isCrossTenantPlatformAccess: entry.IsCrossTenantPlatformAccess);
 
+        using var scope = tenantContext.BeginScope(targetTenantId, platformBypass: true, bypassReason: "audit-append");
         db.AuditEvents.Add(ev);
         await db.SaveChangesAsync(ct);
     }

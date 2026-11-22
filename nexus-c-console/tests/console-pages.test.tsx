@@ -276,7 +276,7 @@ describe('NEXUS C Console — Auth, Fail-Closed RBAC, Tenants, API Management & 
     expect(screen.queryByRole('link', { name: 'Tenants' })).not.toBeInTheDocument();
   });
 
-  it('renders live OpenAPI endpoints in API Explorer and honest Not Available panels for missing API Keys endpoint', async () => {
+  it('renders live OpenAPI endpoints, live Scoped API Keys tab, and honest Not Available panel for deferred Rate Limiting', async () => {
     tokenStore.setFromAuthResponse({
       accessToken: 'admin-jwt',
       accessTokenExpiresAt: new Date(Date.now() + 900_000).toISOString(),
@@ -300,13 +300,33 @@ describe('NEXUS C Console — Auth, Fail-Closed RBAC, Tenants, API Management & 
             scope: 'platform',
             isPlatformUser: true,
             roles: ['PlatformSuperAdmin'],
-            permissions: ['platform.api.read', 'platform.operations.read'],
+            permissions: ['platform.api.read', 'platform.api.manage', 'platform.operations.read'],
           },
           meta: { correlationId: 'c-perm' },
         });
       }
       if (url.includes('/api/v1/platform/tenants/accessible')) {
         return jsonRes({ success: true, data: [], meta: { correlationId: 'c-acc' } });
+      }
+      if (url.endsWith('/api/v1/platform/api-keys')) {
+        return jsonRes({
+          success: true,
+          data: [
+            {
+              id: 'k-1',
+              name: 'ERP Sync Key',
+              tenantId: null,
+              keyPrefix: 'nxk_abc12345',
+              allowedScopes: ['platform.organizations.read'],
+              expiresAt: null,
+              isActive: true,
+              createdAt: '2026-11-22T10:00:00Z',
+              lastUsedAt: null,
+              revokedAt: null,
+            },
+          ],
+          meta: { correlationId: 'c-keys' },
+        });
       }
       if (url.endsWith('/openapi/v1.json')) {
         return jsonRes({
@@ -328,8 +348,191 @@ describe('NEXUS C Console — Auth, Fail-Closed RBAC, Tenants, API Management & 
     expect(await screen.findByText('/api/v1/platform/tenants')).toBeInTheDocument();
 
     await user.click(screen.getByRole('tab', { name: 'API Keys' }));
-    expect(await screen.findByText('API Keys Management')).toBeInTheDocument();
+    expect(await screen.findByText('ERP Sync Key')).toBeInTheDocument();
+    expect(screen.getByText(/nxk_abc12345/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('tab', { name: 'Rate Limiting' }));
+    expect(await screen.findByText('Dynamic Per-Client Rate Limiting Policies')).toBeInTheDocument();
     expect(screen.getByText('Not Available')).toBeInTheDocument();
+  });
+
+  it('renders live Operations Console with Background Jobs & DLQ retry confirmation', async () => {
+    const retrySpy = vi.fn();
+    tokenStore.setFromAuthResponse({
+      accessToken: 'admin-jwt',
+      accessTokenExpiresAt: new Date(Date.now() + 900_000).toISOString(),
+      refreshToken: 'admin-refresh',
+      refreshTokenExpiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      userId: 'u-admin',
+      email: 'admin@nexus.local',
+      tenantId: null,
+      scope: 'platform',
+      sessionId: 'sess-ops',
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/api/v1/auth/permissions')) {
+        return jsonRes({
+          success: true,
+          data: {
+            userId: 'u-admin',
+            tenantId: null,
+            scope: 'platform',
+            isPlatformUser: true,
+            roles: ['PlatformSuperAdmin'],
+            permissions: ['platform.operations.read', 'platform.operations.manage'],
+          },
+          meta: { correlationId: 'c-perm' },
+        });
+      }
+      if (url.endsWith('/api/v1/platform/operations/jobs')) {
+        return jsonRes({
+          success: true,
+          data: [
+            {
+              jobName: 'OutboxDispatcher',
+              status: 'Idle',
+              lastRunStartedAt: '2026-11-22T10:00:00Z',
+              lastRunCompletedAt: '2026-11-22T10:00:01Z',
+              totalRuns: 12,
+              totalItemsProcessed: 42,
+              totalFailures: 0,
+              lastError: null,
+            },
+          ],
+          meta: { correlationId: 'c-jobs' },
+        });
+      }
+      if (url.includes('/api/v1/platform/operations/dead-letters') && method === 'POST') {
+        retrySpy();
+        return jsonRes({
+          success: true,
+          data: { id: 'dlq-1', isResolved: true, manualRetryCount: 1, maxManualRetries: 3 },
+          meta: { correlationId: 'c-retry' },
+        });
+      }
+      if (url.includes('/api/v1/platform/operations/dead-letters')) {
+        return jsonRes({
+          success: true,
+          data: {
+            items: [
+              {
+                id: 'dlq-1',
+                eventId: 'ev-1',
+                eventType: 'platform.workflow.approved.v1',
+                producer: 'nexus-c',
+                tenantId: 't-1',
+                correlationId: 'corr-dlq-1',
+                causationId: null,
+                reason: 'RabbitMQ timeout',
+                retryCount: 5,
+                manualRetryCount: 0,
+                maxManualRetries: 3,
+                lastRetriedByUserId: null,
+                lastRetriedAt: null,
+                retryHistoryJson: null,
+                isResolved: false,
+                failedAt: '2026-11-22T10:00:00Z',
+              },
+            ],
+            page: 1,
+            pageSize: 20,
+            totalCount: 1,
+            totalPages: 1,
+            hasNext: false,
+            hasPrevious: false,
+          },
+          meta: { correlationId: 'c-dlq' },
+        });
+      }
+      if (url.endsWith('/health/live') || url.endsWith('/health/ready')) return new Response('Healthy', { status: 200 });
+      return jsonRes({ success: true, data: [], meta: { correlationId: 'c-empty' } });
+    });
+
+    const user = userEvent.setup();
+    renderAt('/operations');
+
+    expect(await screen.findByText('OutboxDispatcher')).toBeInTheDocument();
+    await user.click(screen.getByRole('tab', { name: 'Dead Letters (DLQ)' }));
+    expect(await screen.findByText('platform.workflow.approved.v1')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Xác nhận Retry' }));
+    await waitFor(() => expect(retrySpy).toHaveBeenCalledTimes(1));
+  });
+
+  it('renders live Ecosystem Application Registry (NEXUS C / F / E / M)', async () => {
+    tokenStore.setFromAuthResponse({
+      accessToken: 'admin-jwt',
+      accessTokenExpiresAt: new Date(Date.now() + 900_000).toISOString(),
+      refreshToken: 'admin-refresh',
+      refreshTokenExpiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      userId: 'u-admin',
+      email: 'admin@nexus.local',
+      tenantId: null,
+      scope: 'platform',
+      sessionId: 'sess-apps',
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/api/v1/auth/permissions')) {
+        return jsonRes({
+          success: true,
+          data: {
+            userId: 'u-admin',
+            tenantId: null,
+            scope: 'platform',
+            isPlatformUser: true,
+            roles: ['PlatformSuperAdmin'],
+            permissions: ['platform.applications.read', 'platform.applications.manage'],
+          },
+          meta: { correlationId: 'c-perm' },
+        });
+      }
+      if (url.endsWith('/api/v1/platform/applications')) {
+        return jsonRes({
+          success: true,
+          data: [
+            {
+              id: 'a-c',
+              code: 'NEXUS_C',
+              name: 'NEXUS C — Center',
+              description: 'Shared core foundation',
+              currentVersion: '1.0.0',
+              releaseChannel: 'Core',
+              status: 'Active',
+              minPlatformVersion: '1.0.0',
+              requiredCapabilities: ['identity'],
+              moduleDependencies: [],
+              compatibilityMetadataJson: null,
+            },
+            {
+              id: 'a-f',
+              code: 'NEXUS_F',
+              name: 'NEXUS F — Finance',
+              description: 'Finance module',
+              currentVersion: '1.0.0',
+              releaseChannel: 'Stable',
+              status: 'Registered',
+              minPlatformVersion: '1.0.0',
+              requiredCapabilities: ['workflow'],
+              moduleDependencies: ['NEXUS_C'],
+              compatibilityMetadataJson: null,
+            },
+          ],
+          meta: { correlationId: 'c-apps' },
+        });
+      }
+      return jsonRes({ success: true, data: [], meta: { correlationId: 'c-empty' } });
+    });
+
+    renderAt('/applications');
+    expect(await screen.findByText('NEXUS C — Center')).toBeInTheDocument();
+    expect(await screen.findByText('NEXUS F — Finance')).toBeInTheDocument();
   });
 
   it('renders Audit Center strictly read-only with zero edit or delete buttons', async () => {

@@ -1,86 +1,152 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
+import { RefreshCw } from 'lucide-react';
 import { PageHeader } from '../../components/layout/PageLayout';
-import { Badge, ErrorState, LoadingState, NotAvailablePanel } from '../../components/feedback/Feedback';
-import { subscriptionsApi } from '../../services/api/modules/platform.api';
+import { Badge, ErrorState, LoadingState, useToast } from '../../components/feedback/Feedback';
+import { applicationsApi } from '../../services/api/modules/platform.api';
 import { queryKeys } from '../../services/api/query-keys';
 import { useAuth } from '../../services/auth/AuthContext';
-
-const ECOSYSTEM_APPS = [
-  { code: 'NEXUS_F', name: 'NEXUS F — Finance', description: 'Kế toán, sổ cái, hóa đơn và quản trị tài chính doanh nghiệp.' },
-  { code: 'NEXUS_E', name: 'NEXUS E — Express', description: 'Kho vận (WMS), vận tải (TMS) và điều phối logistics.' },
-  { code: 'NEXUS_M', name: 'NEXUS M — Management', description: 'Báo cáo điều hành, KPI và phân tích quản trị cấp lãnh đạo.' },
-];
+import { getErrorMessage } from '../../services/api/errors';
 
 export default function ApplicationsPage() {
   const auth = useAuth();
+  const queryClient = useQueryClient();
+  const { notify } = useToast();
   const hasTenant = Boolean(auth.tenantId);
+  const canManageApps = auth.hasPermission('platform.applications.manage');
 
-  const plansQuery = useQuery({
-    queryKey: queryKeys.plans,
-    queryFn: ({ signal }) => subscriptionsApi.listPlans(signal),
+  const registryQuery = useQuery({
+    queryKey: queryKeys.applications,
+    queryFn: ({ signal }) => applicationsApi.listRegistry(signal),
   });
 
-  const subQuery = useQuery({
-    queryKey: queryKeys.currentSubscription,
-    queryFn: ({ signal }) => subscriptionsApi.getCurrent(signal),
+  const tenantAppsQuery = useQuery({
+    queryKey: queryKeys.tenantApplications,
+    queryFn: ({ signal }) => applicationsApi.listTenantApplications(signal),
     enabled: hasTenant,
     retry: false,
   });
 
+  const entitlementsQuery = useQuery({
+    queryKey: queryKeys.entitlements,
+    queryFn: ({ signal }) => applicationsApi.listEntitlements(signal),
+    enabled: hasTenant,
+    retry: false,
+  });
+
+  const toggleMutation = useMutation({
+    mutationFn: ({ code, activate }: { code: string; activate: boolean }) =>
+      activate ? applicationsApi.activateForTenant(code) : applicationsApi.deactivateForTenant(code),
+    onSuccess: (res) => {
+      notify(
+        `${res.isActivated ? 'Đã kích hoạt' : 'Đã tắt'} ứng dụng ${res.applicationCode} cho tenant hiện tại.`,
+        'success',
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tenantApplications });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.entitlements });
+    },
+    onError: (err) => notify(getErrorMessage(err), 'danger'),
+  });
+
+  const tenantAppMap = new Map((tenantAppsQuery.data ?? []).map((a) => [a.applicationCode, a]));
+  const entitlementMap = new Map((entitlementsQuery.data ?? []).map((e) => [e.featureCode, e]));
+
   return (
     <div>
       <PageHeader
-        title="Quản lý Ứng dụng (NEXUS F / E / M)"
-        subtitle="Theo dõi quyền sử dụng (entitlements) của 3 sản phẩm nghiệp vụ theo gói thuê bao. Entitlement không thay thế backend authorization."
+        title="Ecosystem Application Registry (NEXUS C / F / E / M)"
+        subtitle="Danh mục ứng dụng chính thức của hệ sinh thái NEXUS cùng trạng thái kích hoạt & quyền sử dụng (entitlements) theo từng Tenant."
         breadcrumbs={[{ label: 'Overview', to: '/overview' }, { label: 'Applications' }]}
         actions={
-          <Link to="/subscriptions" className="btn btn-primary">
-            Quản lý Gói & Cấp quyền thuê bao
-          </Link>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                void registryQuery.refetch();
+                if (hasTenant) {
+                  void tenantAppsQuery.refetch();
+                  void entitlementsQuery.refetch();
+                }
+              }}
+            >
+              <RefreshCw size={14} /> Làm mới
+            </button>
+            <Link to="/subscriptions" className="btn btn-primary">
+              Quản lý Gói & Thuê bao
+            </Link>
+          </div>
         }
       />
 
-      <div className="metric-grid">
-        {ECOSYSTEM_APPS.map((app) => {
-          const ent = subQuery.data?.entitlements.find((e) => e.featureCode === app.code);
-          const enabledInPlans = (plansQuery.data ?? []).filter((p) =>
-            p.features.some((f) => f.featureCode === app.code && f.isEnabled),
-          ).length;
-
-          return (
-            <div key={app.code} className="metric-box">
-              <div className="metric-label">
-                <span className="mono">{app.code}</span>
-                {hasTenant ? (
-                  <Badge variant={ent?.isEnabled ? 'success' : 'neutral'}>
-                    {subQuery.isLoading ? 'Checking' : ent?.isEnabled ? 'Entitled' : 'Not Entitled'}
-                  </Badge>
-                ) : (
-                  <Badge variant="info">{enabledInPlans} Plan(s)</Badge>
-                )}
-              </div>
-              <div style={{ fontWeight: 600, fontSize: 15, marginTop: 6 }}>{app.name}</div>
-              <div className="metric-meta">{app.description}</div>
-              {ent?.quotaLimit != null && (
-                <div className="metric-meta mono">Quota limit: {ent.quotaLimit}</div>
-              )}
-            </div>
-          );
-        })}
+      <div className="alert alert-info" style={{ marginBottom: 16 }}>
+        <strong>Lưu ý kiến trúc:</strong> Việc một ứng dụng được đăng ký trong Application Registry phản ánh siêu dữ liệu hợp đồng & tương thích phiên bản — không đồng nghĩa tiến trình triển khai thực tế của F/E/M đang chạy online.
       </div>
 
-      {plansQuery.isLoading ? (
-        <LoadingState />
-      ) : plansQuery.error ? (
-        <ErrorState error={plansQuery.error} onRetry={() => void plansQuery.refetch()} />
-      ) : null}
+      {registryQuery.isLoading ? (
+        <LoadingState label="Đang tải danh mục ứng dụng NEXUS..." />
+      ) : registryQuery.error ? (
+        <ErrorState error={registryQuery.error} onRetry={() => void registryQuery.refetch()} />
+      ) : (
+        <div className="metric-grid">
+          {(registryQuery.data ?? []).map((app) => {
+            const tenantState = tenantAppMap.get(app.code);
+            const ent = entitlementMap.get(app.code);
+            return (
+              <div key={app.code} className="metric-box">
+                <div className="metric-label">
+                  <span className="mono" style={{ fontWeight: 600 }}>{app.code}</span>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <Badge variant={app.status === 'Active' ? 'success' : 'info'}>{app.status}</Badge>
+                    <Badge variant="neutral">v{app.currentVersion}</Badge>
+                  </div>
+                </div>
+                <div style={{ fontWeight: 600, fontSize: 15, marginTop: 6 }}>{app.name}</div>
+                <div className="metric-meta">{app.description}</div>
+                <div className="metric-meta mono" style={{ marginTop: 6 }}>
+                  Channel: {app.releaseChannel} · Min Core: v{app.minPlatformVersion}
+                </div>
+                {app.moduleDependencies.length > 0 && (
+                  <div className="metric-meta mono">
+                    Dependencies: {app.moduleDependencies.join(', ')}
+                  </div>
+                )}
 
-      <NotAvailablePanel
-        title="Application Registry & Service Version Metadata"
-        endpoint="GET /api/v1/platform/applications"
-        description="NEXUS C Backend hiện đã cung cấp API quản lý Plans & Entitlements (NEXUS_F / NEXUS_E / NEXUS_M) qua module Subscription, nhưng chưa cung cấp endpoint Application Registry trả về phiên bản build/triển khai thực tế của từng dịch vụ F, E, M."
-      />
+                {hasTenant && (
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <Badge variant={tenantState?.isEntitled ? 'success' : 'neutral'}>
+                        {tenantState?.isEntitled ? 'Entitled' : tenantState?.entitlementReason ?? 'Not Entitled'}
+                      </Badge>
+                      {ent?.quotaLimit != null && (
+                        <Badge variant="neutral">
+                          Usage: {ent.currentUsage}/{ent.quotaLimit}
+                        </Badge>
+                      )}
+                    </div>
+
+                    {canManageApps && app.code !== 'NEXUS_C' && (
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={toggleMutation.isPending}
+                        onClick={() =>
+                          toggleMutation.mutate({
+                            code: app.code,
+                            activate: !(tenantState?.isActivated ?? false),
+                          })
+                        }
+                      >
+                        {tenantState?.isActivated ? 'Tắt cho Tenant' : 'Kích hoạt'}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

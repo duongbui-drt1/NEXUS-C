@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Nexus.BuildingBlocks.Infrastructure;
+using Nexus.BuildingBlocks.Observability;
 using Nexus.BuildingBlocks.Web;
 using Nexus.Modules.Integration.Domain;
 using Nexus.Modules.Integration.Infrastructure;
@@ -15,8 +16,45 @@ public sealed record CreateConnectionRequest(Guid ProviderId, string Name, strin
 public sealed record ConnectionDto(Guid Id, Guid TenantId, Guid ProviderId, string Name, string CredentialReference, string Status, int MaxRetries, int TimeoutSeconds, DateTimeOffset? LastSyncedAt);
 public sealed record RecordSyncRequest(string Direction, SyncStatus Status, int RecordsProcessed, string? Summary, string? ErrorCode = null, string? ErrorMessage = null);
 public sealed record SyncLogDto(Guid Id, Guid ConnectionId, string Direction, string Status, int RecordsProcessed, string? Summary, DateTimeOffset StartedAt, DateTimeOffset? CompletedAt);
-public sealed record CreateWebhookRequest(string EventType, string TargetUrl, string SigningSecretRef);
-public sealed record WebhookDto(Guid Id, Guid TenantId, string EventType, string TargetUrl, bool IsActive);
+public sealed record IntegrationErrorDto(Guid Id, Guid TenantId, Guid ConnectionId, string ErrorCode, string Message, int AttemptNumber, DateTimeOffset OccurredAt);
+
+public sealed record CreateWebhookRequest(string EventType, string TargetUrl, string SigningSecretRef, string? Description = null);
+public sealed record UpdateWebhookRequest(string EventType, string TargetUrl, string? Description = null);
+public sealed record WebhookDto(
+    Guid Id,
+    Guid TenantId,
+    string EventType,
+    string TargetUrl,
+    bool IsActive,
+    string? Description = null,
+    int SecretVersion = 1,
+    string? SecretPrefix = null,
+    DateTimeOffset? SecretRotatedAt = null);
+
+public sealed record WebhookSecretRotationDto(WebhookDto Webhook, string SigningSecret);
+
+public sealed record RecordWebhookDeliveryRequest(
+    Guid EventId,
+    string PayloadJson,
+    WebhookDeliveryStatus Status = WebhookDeliveryStatus.Succeeded,
+    int? HttpStatusCode = 200,
+    string? FailureReason = null);
+
+public sealed record WebhookDeliveryDto(
+    Guid Id,
+    Guid TenantId,
+    Guid WebhookId,
+    Guid EventId,
+    string EventType,
+    string Status,
+    int AttemptCount,
+    int? HttpStatusCode,
+    long TimestampUnix,
+    string? SignatureDigestPrefix,
+    string? FailureReason,
+    DateTimeOffset AttemptedAt,
+    DateTimeOffset? CompletedAt);
+
 public sealed record RegisterAiModelRequest(string ModelCode, string ProviderName, int TimeoutSeconds = 30, int MaxTokensLimit = 2048);
 public sealed record AiModelDto(Guid Id, string ModelCode, string ProviderName, int TimeoutSeconds, int MaxTokensLimit, bool IsEnabled);
 public sealed record InvokeAiRequest(string ModelCode, string Prompt, int MaxTokens = 256, Dictionary<string, object>? Metadata = null);
@@ -29,7 +67,18 @@ public interface IIntegrationService
     Task<Result<IReadOnlyList<ConnectionDto>>> ListConnectionsAsync(CancellationToken ct = default);
     Task<Result<SyncLogDto>> RecordSyncAsync(Guid connectionId, RecordSyncRequest request, CancellationToken ct = default);
     Task<Result<IReadOnlyList<SyncLogDto>>> ListSyncLogsAsync(Guid connectionId, CancellationToken ct = default);
+    Task<Result<IReadOnlyList<IntegrationErrorDto>>> ListErrorsAsync(CancellationToken ct = default);
+
     Task<Result<WebhookDto>> RegisterWebhookAsync(CreateWebhookRequest request, CancellationToken ct = default);
+    Task<Result<IReadOnlyList<WebhookDto>>> ListWebhooksAsync(CancellationToken ct = default);
+    Task<Result<WebhookDto>> UpdateWebhookAsync(Guid webhookId, UpdateWebhookRequest request, CancellationToken ct = default);
+    Task<Result<WebhookDto>> SetWebhookActiveAsync(Guid webhookId, bool isActive, CancellationToken ct = default);
+    Task<Result> DeleteWebhookAsync(Guid webhookId, CancellationToken ct = default);
+    Task<Result<WebhookSecretRotationDto>> RotateWebhookSecretAsync(Guid webhookId, CancellationToken ct = default);
+    Task<Result<WebhookDeliveryDto>> RecordWebhookDeliveryAsync(Guid webhookId, RecordWebhookDeliveryRequest request, CancellationToken ct = default);
+    Task<Result<IReadOnlyList<WebhookDeliveryDto>>> ListWebhookDeliveriesAsync(Guid webhookId, CancellationToken ct = default);
+    Task<Result<WebhookDeliveryDto>> RetryWebhookDeliveryAsync(Guid deliveryId, CancellationToken ct = default);
+
     Task<Result<AiModelDto>> RegisterAiModelAsync(RegisterAiModelRequest request, CancellationToken ct = default);
     Task<Result<AiCompletionResponse>> InvokeAiGatewayAsync(InvokeAiRequest request, CancellationToken ct = default);
 }
@@ -146,20 +195,198 @@ public sealed class IntegrationService(
         return list;
     }
 
+    public async Task<Result<IReadOnlyList<IntegrationErrorDto>>> ListErrorsAsync(CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+
+        var list = await db.Errors.AsNoTracking()
+            .OrderByDescending(e => e.OccurredAt)
+            .Take(100)
+            .Select(e => new IntegrationErrorDto(e.Id, e.TenantId, e.ConnectionId, e.ErrorCode, e.Message, e.AttemptNumber, e.OccurredAt))
+            .ToListAsync(ct);
+
+        return list;
+    }
+
+    // === Complete Webhook Lifecycle ===
+
     public async Task<Result<WebhookDto>> RegisterWebhookAsync(CreateWebhookRequest request, CancellationToken ct = default)
     {
         if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
         var tenantId = tenantContext.TenantId!.Value;
 
-        var created = WebhookRegistration.Create(tenantId, request.EventType, request.TargetUrl, request.SigningSecretRef);
+        var created = WebhookRegistration.Create(tenantId, request.EventType, request.TargetUrl, request.SigningSecretRef, request.Description);
         if (created.IsFailure) return Result.Failure<WebhookDto>(created.Error);
 
         var wh = created.Value;
         db.Webhooks.Add(wh);
         await db.SaveChangesAsync(ct);
 
-        return new WebhookDto(wh.Id, wh.TenantId, wh.EventType, wh.TargetUrl, wh.IsActive);
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "integration.webhook.create", "WebhookRegistration", wh.Id.ToString("D"), tenantId, "Success",
+            AfterState: new { wh.EventType, wh.TargetUrl, wh.IsActive }), ct);
+
+        return MapWebhook(wh);
     }
+
+    public async Task<Result<IReadOnlyList<WebhookDto>>> ListWebhooksAsync(CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+
+        var list = await db.Webhooks.AsNoTracking()
+            .OrderByDescending(w => w.CreatedAt)
+            .Select(w => MapWebhook(w))
+            .ToListAsync(ct);
+
+        return list;
+    }
+
+    public async Task<Result<WebhookDto>> UpdateWebhookAsync(Guid webhookId, UpdateWebhookRequest request, CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+        var tenantId = tenantContext.TenantId!.Value;
+
+        var wh = await db.Webhooks.FirstOrDefaultAsync(w => w.Id == webhookId, ct);
+        if (wh is null) return Error.NotFound("WEBHOOK_NOT_FOUND", "Webhook registration was not found.");
+
+        var before = MapWebhook(wh);
+        var res = wh.Update(request.EventType, request.TargetUrl, request.Description);
+        if (res.IsFailure) return Result.Failure<WebhookDto>(res.Error);
+
+        await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "integration.webhook.update", "WebhookRegistration", wh.Id.ToString("D"), tenantId, "Success",
+            BeforeState: before, AfterState: MapWebhook(wh)), ct);
+
+        return MapWebhook(wh);
+    }
+
+    public async Task<Result<WebhookDto>> SetWebhookActiveAsync(Guid webhookId, bool isActive, CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+        var tenantId = tenantContext.TenantId!.Value;
+
+        var wh = await db.Webhooks.FirstOrDefaultAsync(w => w.Id == webhookId, ct);
+        if (wh is null) return Error.NotFound("WEBHOOK_NOT_FOUND", "Webhook registration was not found.");
+
+        wh.SetActive(isActive);
+        await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            isActive ? "integration.webhook.enable" : "integration.webhook.disable",
+            "WebhookRegistration", wh.Id.ToString("D"), tenantId, "Success"), ct);
+
+        return MapWebhook(wh);
+    }
+
+    public async Task<Result> DeleteWebhookAsync(Guid webhookId, CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Result.Failure(Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required."));
+        var tenantId = tenantContext.TenantId!.Value;
+
+        var wh = await db.Webhooks.FirstOrDefaultAsync(w => w.Id == webhookId, ct);
+        if (wh is null) return Result.Failure(Error.NotFound("WEBHOOK_NOT_FOUND", "Webhook registration was not found."));
+
+        db.Webhooks.Remove(wh);
+        await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "integration.webhook.delete", "WebhookRegistration", webhookId.ToString("D"), tenantId, "Success"), ct);
+
+        return Result.Success();
+    }
+
+    public async Task<Result<WebhookSecretRotationDto>> RotateWebhookSecretAsync(Guid webhookId, CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+        var tenantId = tenantContext.TenantId!.Value;
+
+        var wh = await db.Webhooks.FirstOrDefaultAsync(w => w.Id == webhookId, ct);
+        if (wh is null) return Error.NotFound("WEBHOOK_NOT_FOUND", "Webhook registration was not found.");
+
+        // Generate a fresh high-entropy signing secret, return it ONCE, and persist ONLY its SHA-256 hash + prefix
+        var rawSecret = $"whsec_{CryptoHelper.GenerateSecureToken(32)}";
+        var hash = CryptoHelper.Sha256Hex(rawSecret);
+        var prefix = rawSecret[..12];
+
+        wh.RotateSecret(hash, prefix, clock.UtcNow, $"managed://webhooks/{wh.Id:D}/v{wh.SecretVersion + 1}");
+        await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "integration.webhook.rotate_secret", "WebhookRegistration", wh.Id.ToString("D"), tenantId, "Success",
+            AfterState: new { wh.SecretVersion, wh.SecretPrefix, wh.SecretRotatedAt }), ct);
+
+        return new WebhookSecretRotationDto(MapWebhook(wh), rawSecret);
+    }
+
+    public async Task<Result<WebhookDeliveryDto>> RecordWebhookDeliveryAsync(Guid webhookId, RecordWebhookDeliveryRequest request, CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+        var tenantId = tenantContext.TenantId!.Value;
+
+        var wh = await db.Webhooks.AsNoTracking().FirstOrDefaultAsync(w => w.Id == webhookId, ct);
+        if (wh is null) return Error.NotFound("WEBHOOK_NOT_FOUND", "Webhook registration was not found.");
+        if (!wh.IsActive) return Error.BusinessRule("WEBHOOK_DISABLED", "Cannot deliver events to a disabled webhook.");
+
+        var now = clock.UtcNow;
+        var ts = now.ToUnixTimeSeconds();
+        var sigPrefix = WebhookSignatureHelper.ComputeSignature(request.PayloadJson ?? "{}", ts, wh.SigningSecretHash ?? wh.SigningSecretRef)[..16];
+
+        var delivery = WebhookDelivery.Record(
+            tenantId, wh.Id, request.EventId, wh.EventType,
+            request.Status, request.HttpStatusCode, ts, sigPrefix, request.FailureReason, now);
+
+        db.WebhookDeliveries.Add(delivery);
+        await db.SaveChangesAsync(ct);
+
+        NexusPlatformMetrics.WebhookDeliveries.Add(1, new KeyValuePair<string, object?>("status", delivery.Status.ToString().ToLowerInvariant()));
+
+        return MapDelivery(delivery);
+    }
+
+    public async Task<Result<IReadOnlyList<WebhookDeliveryDto>>> ListWebhookDeliveriesAsync(Guid webhookId, CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+
+        var exists = await db.Webhooks.AsNoTracking().AnyAsync(w => w.Id == webhookId, ct);
+        if (!exists) return Error.NotFound("WEBHOOK_NOT_FOUND", "Webhook registration was not found.");
+
+        var list = await db.WebhookDeliveries.AsNoTracking()
+            .Where(d => d.WebhookId == webhookId)
+            .OrderByDescending(d => d.AttemptedAt)
+            .Take(100)
+            .Select(d => MapDelivery(d))
+            .ToListAsync(ct);
+
+        return list;
+    }
+
+    public async Task<Result<WebhookDeliveryDto>> RetryWebhookDeliveryAsync(Guid deliveryId, CancellationToken ct = default)
+    {
+        if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
+        var tenantId = tenantContext.TenantId!.Value;
+
+        var delivery = await db.WebhookDeliveries.FirstOrDefaultAsync(d => d.Id == deliveryId, ct);
+        if (delivery is null) return Error.NotFound("WEBHOOK_DELIVERY_NOT_FOUND", "Webhook delivery record was not found.");
+
+        if (delivery.AttemptCount >= 5)
+        {
+            return Error.BusinessRule("WEBHOOK_RETRY_LIMIT_EXCEEDED", "Maximum webhook retry attempts (5) reached.");
+        }
+
+        var now = clock.UtcNow;
+        delivery.RecordRetryAttempt(WebhookDeliveryStatus.Pending, null, now.ToUnixTimeSeconds(), null, now);
+        await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "integration.webhook.delivery_retry", "WebhookDelivery", delivery.Id.ToString("D"), tenantId, "Success",
+            AfterState: new { delivery.WebhookId, delivery.EventId, delivery.AttemptCount }), ct);
+
+        return MapDelivery(delivery);
+    }
+
+    // === AI Gateway ===
 
     public async Task<Result<AiModelDto>> RegisterAiModelAsync(RegisterAiModelRequest request, CancellationToken ct = default)
     {
@@ -180,7 +407,6 @@ public sealed class IntegrationService(
         if (!tenantContext.HasTenant) return Error.Forbidden("TENANT_CONTEXT_REQUIRED", "Tenant context is required.");
         var tenantId = tenantContext.TenantId!.Value;
 
-        // Mandatory tenant entitlement check before calling AI provider
         var entitled = await entitlementChecker.HasFeatureAsync(tenantId, "AI_GATEWAY", ct);
         if (!entitled)
         {
@@ -216,4 +442,12 @@ public sealed class IntegrationService(
         await entitlementChecker.RecordUsageAsync(tenantId, "AI_GATEWAY", response.PromptTokens + response.CompletionTokens, ct);
         return response;
     }
+
+    private static WebhookDto MapWebhook(WebhookRegistration w) => new(
+        w.Id, w.TenantId, w.EventType, w.TargetUrl, w.IsActive, w.Description, w.SecretVersion, w.SecretPrefix, w.SecretRotatedAt);
+
+    private static WebhookDeliveryDto MapDelivery(WebhookDelivery d) => new(
+        d.Id, d.TenantId, d.WebhookId, d.EventId, d.EventType, d.Status.ToString(),
+        d.AttemptCount, d.HttpStatusCode, d.TimestampUnix, d.SignatureDigestPrefix,
+        d.FailureReason, d.AttemptedAt, d.CompletedAt);
 }

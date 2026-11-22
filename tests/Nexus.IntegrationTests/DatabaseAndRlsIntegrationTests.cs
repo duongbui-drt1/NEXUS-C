@@ -363,6 +363,12 @@ public sealed class DatabaseAndRlsIntegrationTests(NexusPostgresFixture fixture)
             await writer.WriteAsync(new AuditEntryRequest("test.audit.immutable", "Test", "1", null, "Success"));
 
             var auditDb = scope.ServiceProvider.GetRequiredService<AuditDbContext>();
+            var tenantCtx = scope.ServiceProvider.GetRequiredService<ITenantContext>();
+
+            // Fail-closed PostgreSQL FORCE RLS: without tenant or platform scope, audit_events returns 0 rows!
+            Assert.Empty(await auditDb.AuditEvents.AsNoTracking().ToListAsync());
+
+            using var readScope = tenantCtx.BeginScope(null, platformBypass: true, bypassReason: "test-audit-immutability");
             var ev = await auditDb.AuditEvents.OrderByDescending(x => x.OccurredAt).FirstAsync();
             auditId = ev.Id;
 
@@ -381,11 +387,20 @@ public sealed class DatabaseAndRlsIntegrationTests(NexusPostgresFixture fixture)
             await Assert.ThrowsAsync<PostgresException>(() => upd.ExecuteNonQueryAsync());
         }
 
-        // Even table owner (nexus_migrator) is blocked by PostgreSQL immutability trigger!
+        // Table owner (nexus_migrator) is blocked by FORCE ROW LEVEL SECURITY default-deny DELETE (0 rows affected)!
         await using (var ownerConn = new NpgsqlConnection(fixture.MigratorConnectionString))
         {
             await ownerConn.OpenAsync();
-            await using var del = new NpgsqlCommand("DELETE FROM audit.audit_events WHERE \"Id\" = @id;", ownerConn);
+            await using var delOwner = new NpgsqlCommand("DELETE FROM audit.audit_events WHERE \"Id\" = @id;", ownerConn);
+            delOwner.Parameters.AddWithValue("@id", auditId);
+            Assert.Equal(0, await delOwner.ExecuteNonQueryAsync());
+        }
+
+        // Even PostgreSQL superuser (bypassing RLS) is strictly blocked by the BEFORE UPDATE OR DELETE immutability trigger!
+        await using (var suConn = new NpgsqlConnection(fixture.SuperuserDbConnectionString))
+        {
+            await suConn.OpenAsync();
+            await using var del = new NpgsqlCommand("DELETE FROM audit.audit_events WHERE \"Id\" = @id;", suConn);
             del.Parameters.AddWithValue("@id", auditId);
             var trigEx = await Assert.ThrowsAsync<PostgresException>(() => del.ExecuteNonQueryAsync());
             Assert.Contains("append-only and immutable", trigEx.Message);

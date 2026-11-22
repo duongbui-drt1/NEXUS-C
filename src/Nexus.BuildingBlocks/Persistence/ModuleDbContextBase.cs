@@ -59,6 +59,8 @@ public abstract class ModuleDbContextBase : DbContext
             builder.Property(x => x.EventId).IsRequired();
             builder.Property(x => x.EventType).HasMaxLength(200).IsRequired();
             builder.Property(x => x.CorrelationId).HasMaxLength(100).IsRequired();
+            builder.Property(x => x.Producer).HasMaxLength(100).HasDefaultValue("nexus-c").IsRequired();
+            builder.Property(x => x.CausationId).HasMaxLength(100);
             builder.Property(x => x.PayloadJson).HasColumnType("jsonb").IsRequired();
             builder.Property(x => x.Status).HasConversion<string>().HasMaxLength(32).IsRequired();
             builder.Property(x => x.LastError).HasMaxLength(2000);
