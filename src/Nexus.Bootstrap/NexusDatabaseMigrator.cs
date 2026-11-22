@@ -26,6 +26,10 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
 {
     private const long MigrationAdvisoryLockKey = 74839210L;
 
+    // Serializes concurrent in-process EF Core 10 MigrateAsync() calls (e.g., parallel multi-DB test suites)
+    // to prevent EF Core's MigrationsAssembly.ModelSnapshot finalization race on cold startup.
+    private static readonly SemaphoreSlim InProcessEfMigrationGate = new(1, 1);
+
     public async Task MigrateAndHardeningAsync(string migrationConnectionString, string appRoleName = "nexus_app", CancellationToken ct = default)
     {
         logger.LogInformation("Acquiring PostgreSQL advisory lock ({LockKey}) for NEXUS C Foundation migration...", MigrationAdvisoryLockKey);
@@ -123,7 +127,15 @@ public sealed class NexusDatabaseMigrator(IServiceProvider serviceProvider, ILog
 
         await using (db)
         {
-            await db.Database.MigrateAsync(ct);
+            await InProcessEfMigrationGate.WaitAsync(ct);
+            try
+            {
+                await db.Database.MigrateAsync(ct);
+            }
+            finally
+            {
+                InProcessEfMigrationGate.Release();
+            }
         }
     }
 
