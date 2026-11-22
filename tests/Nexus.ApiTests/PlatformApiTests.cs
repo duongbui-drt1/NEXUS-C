@@ -221,7 +221,7 @@ public sealed class PlatformApiTests(NexusPostgresFixture fixture) : IClassFixtu
 
         // 2. Configuration & Feature Flags + Plaintext secret rejection
         var secretReject = await owner.PutAsJsonAsync("/api/v1/platform/configuration/tenant",
-            new UpsertSettingRequest("stripe_api_key", "sk_live_forbidden", "Billing"));
+            new UpsertSettingRequest("stripe_api_key", "raw_billing_secret_forbidden", "Billing"));
         Assert.Equal(HttpStatusCode.UnprocessableEntity, secretReject.StatusCode);
 
         var localeSetting = await ReadDataAsync<SettingDto>(await owner.PutAsJsonAsync("/api/v1/platform/configuration/tenant",

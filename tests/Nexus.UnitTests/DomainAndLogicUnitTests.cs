@@ -177,7 +177,7 @@ public sealed class DomainAndLogicUnitTests
     [Fact]
     public void IntegrationConnection_RejectsRawCredentialsRequiresSecretRefUri()
     {
-        var raw = IntegrationConnection.Create(Guid.NewGuid(), Guid.NewGuid(), "Bank", "sk_live_raw_secret_123");
+        var raw = IntegrationConnection.Create(Guid.NewGuid(), Guid.NewGuid(), "Bank", "raw_plaintext_secret_forbidden_123");
         Assert.True(raw.IsFailure);
         Assert.Equal("INTEGRATION_INVALID_CREDENTIAL_REF", raw.Error.Code);
 

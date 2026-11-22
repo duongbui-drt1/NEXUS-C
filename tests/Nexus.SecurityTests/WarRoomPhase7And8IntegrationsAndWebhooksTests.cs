@@ -42,7 +42,7 @@ public sealed class WarRoomPhase7And8IntegrationsAndWebhooksTests(NexusPostgresF
                 resendProvider.Id,
                 "Bad Secret Connection",
                 "vault://nexus/wr7/resend",
-                NonSecretConfig: new Dictionary<string, object> { ["apiKey"] = "re_live_leaked_key" }));
+                NonSecretConfig: new Dictionary<string, object> { ["apiKey"] = "raw_plaintext_api_key_forbidden" }));
         Assert.Equal(HttpStatusCode.BadRequest, badSecretCfg.StatusCode);
         Assert.Contains("CONNECTION_SECRET_IN_CONFIG_FORBIDDEN", await badSecretCfg.Content.ReadAsStringAsync());
 

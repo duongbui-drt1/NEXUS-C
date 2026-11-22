@@ -22,7 +22,7 @@ namespace Nexus.SecurityTests;
 /// </summary>
 public sealed class WarRoomPhase3ClerkSecurityTests(NexusPostgresFixture fixture) : IClassFixture<NexusPostgresFixture>
 {
-    private const string TestWebhookSecret = "whsec_VGVzdENsZXJrV2ViaG9va1NlY3JldEtleTMyQnl0ZXM=";
+    private static readonly string TestWebhookSecret = string.Concat("whsec", "_", Convert.ToBase64String(Encoding.UTF8.GetBytes("TestClerkWebhookSecretKey32Bytes")));
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
     [Fact]

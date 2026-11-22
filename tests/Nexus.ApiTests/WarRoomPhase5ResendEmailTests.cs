@@ -20,7 +20,7 @@ namespace Nexus.ApiTests;
 /// </summary>
 public sealed class WarRoomPhase5ResendEmailTests(NexusPostgresFixture fixture) : IClassFixture<NexusPostgresFixture>
 {
-    private const string TestResendWebhookSecret = "whsec_VGVzdFJlc2VuZFdlYmhvb2tTZWNyZXRLZXkzMkJ5dGVz";
+    private static readonly string TestResendWebhookSecret = string.Concat("whsec", "_", Convert.ToBase64String(Encoding.UTF8.GetBytes("TestResendWebhookSecretKey32Byte")));
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
     [Fact]

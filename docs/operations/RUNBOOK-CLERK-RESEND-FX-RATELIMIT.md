@@ -10,8 +10,8 @@ Set in environment or secret manager (never commit raw secrets):
 Clerk__Enabled=true
 Clerk__AppId=app_3MTU0OPO0cFJboGQYPkeOLjZohj
 Clerk__Authority=https://<your-clerk-frontend-api>.clerk.accounts.dev
-Clerk__SecretKey=sk_live_...
-Clerk__WebhookSigningSecret=whsec_...
+Clerk__SecretKey=<YOUR_CLERK_SECRET_KEY>
+Clerk__WebhookSigningSecret=<YOUR_CLERK_WEBHOOK_SIGNING_SECRET>
 ```
 
 ### 1.2 Host CLI Authentication & Live Reconciliation
@@ -37,8 +37,8 @@ Because NEXUS C uses dual-scheme JWT selection (`NexusDualAuth`), setting `Clerk
 Email__Provider=Resend
 Email__DefaultFromAddress=no-reply@duli.studio
 Email__DefaultFromName="NEXUS C Platform"
-Email__Resend__ApiKey=re_...
-Email__Resend__WebhookSecret=whsec_...
+Email__Resend__ApiKey=<YOUR_RESEND_API_KEY>
+Email__Resend__WebhookSecret=<YOUR_RESEND_WEBHOOK_SIGNING_SECRET>
 ```
 
 ### 2.2 Operational Checks & Bounce Suppressions

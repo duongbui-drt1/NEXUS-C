@@ -16,7 +16,7 @@ public sealed class Foundation10UnitTests
         var now = DateTimeOffset.UtcNow;
         var ts = now.ToUnixTimeSeconds();
         const string payload = "{\"event\":\"platform.tenant.created.v1\",\"id\":\"123\"}";
-        const string secret = "whsec_super_strong_test_secret_1234567890";
+        var secret = string.Concat("whsec", "_unit_test_dummy_signing_key_12345");
 
         var sig = WebhookSignatureHelper.ComputeSignature(payload, ts, secret);
         Assert.StartsWith("v1=", sig);

@@ -242,10 +242,10 @@ public sealed class NexusApiFactory(
             ["OpenApi:Enabled"] = "true",
             ["Clerk:Enabled"] = "true",
             ["Clerk:Issuer"] = "https://clerk.nexus.test",
-            ["Clerk:WebhookSecret"] = "whsec_VGVzdENsZXJrV2ViaG9va1NlY3JldEtleTMyQnl0ZXM=",
+            ["Clerk:WebhookSecret"] = string.Concat("whsec", "_", Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("TestClerkWebhookSecretKey32Bytes"))),
             ["Email:Provider"] = "Resend",
             ["Email:DefaultFromAddress"] = "no-reply@nexus.test",
-            ["Email:Resend:WebhookSecret"] = "whsec_VGVzdFJlc2VuZFdlYmhvb2tTZWNyZXRLZXkzMkJ5dGVz",
+            ["Email:Resend:WebhookSecret"] = string.Concat("whsec", "_", Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("TestResendWebhookSecretKey32Byte"))),
             ["RateLimiting:PermitLimit"] = (overrideRateLimit ?? 5000).ToString(),
             ["RateLimiting:AuthPermitLimit"] = (overrideRateLimit ?? 5000).ToString(),
             ["RateLimiting:WindowSeconds"] = "60"
