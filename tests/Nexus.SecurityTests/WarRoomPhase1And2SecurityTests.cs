@@ -157,6 +157,47 @@ public sealed class WarRoomPhase1And2SecurityTests(NexusPostgresFixture fixture)
         Assert.Equal(HttpStatusCode.Created, reactivate.StatusCode);
     }
 
+    [Fact]
+    public async Task PlatformAdmin_CanSwitchIntoTenantContext_RetainPlatformPermissions_AndSwitchBackToGlobal()
+    {
+        var superAuth = await fixture.LoginAsync(fixture.SuperAdminEmail, fixture.SuperAdminPassword);
+        using var superAdmin = fixture.CreateAuthenticatedClient(superAuth.AccessToken);
+
+        var tenant = await ReadDataAsync<TenantDto>(await superAdmin.PostAsJsonAsync("/api/v1/platform/tenants",
+            new CreateTenantRequest("SWCTX", "Switch Context Tenant", "sw-ctx", "UTC", "USD", "US")));
+
+        // 1. PlatformSuperAdmin sees all non-archived tenants in /tenants/accessible even without membership rows
+        var accessible = await ReadDataAsync<List<TenantDto>>(await superAdmin.GetAsync("/api/v1/platform/tenants/accessible"));
+        Assert.Contains(accessible, t => t.Id == tenant.Id);
+
+        // 2. Switch into tenant context
+        var switched = await ReadDataAsync<AuthTokenResponse>(await superAdmin.PostAsJsonAsync("/api/v1/auth/switch-tenant",
+            new SwitchTenantRequest(tenant.Id)));
+        Assert.Equal(tenant.Id, switched.TenantId);
+
+        using var scopedAdmin = fixture.CreateAuthenticatedClient(switched.AccessToken);
+
+        // 3. Effective permissions retain platform.integrations.read & all PlatformSuperAdmin permissions!
+        var permRaw = await (await scopedAdmin.GetAsync("/api/v1/auth/permissions")).Content.ReadAsStringAsync();
+        using var permDoc = JsonDocument.Parse(permRaw);
+        var permData = permDoc.RootElement.GetProperty("data");
+        Assert.True(permData.GetProperty("isPlatformUser").GetBoolean());
+        var perms = permData.GetProperty("permissions").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.Contains(Permissions.IntegrationsRead, perms);
+        Assert.Contains(Permissions.OrganizationsRead, perms);
+
+        // 4. Tenant-scoped endpoints succeed with HTTP 200 OK
+        Assert.Equal(HttpStatusCode.OK, (await scopedAdmin.GetAsync("/api/v1/platform/integrations/connections")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await scopedAdmin.GetAsync("/api/v1/platform/integrations/ai/policies")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await scopedAdmin.GetAsync("/api/v1/platform/organizations/legal-entities")).StatusCode);
+
+        // 5. Switch back to Platform (Global)
+        var backGlobal = await ReadDataAsync<AuthTokenResponse>(await scopedAdmin.PostAsJsonAsync("/api/v1/auth/switch-tenant",
+            new SwitchTenantRequest(null)));
+        Assert.Null(backGlobal.TenantId);
+        Assert.Equal("platform", backGlobal.Scope);
+    }
+
     private static async Task<T> ReadDataAsync<T>(HttpResponseMessage response)
     {
         var raw = await response.Content.ReadAsStringAsync();
