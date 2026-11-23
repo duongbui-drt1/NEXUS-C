@@ -429,6 +429,10 @@ public sealed class AccessControlService(
 
     public async Task<IReadOnlyList<string>> GetRoleNamesAsync(Guid userId, Guid? tenantId, bool isPlatformScope, CancellationToken ct = default)
     {
+        using var platformRoleScope = isPlatformScope && tenantId.HasValue
+            ? tenantContext.BeginScope(tenantId, platformBypass: true, bypassReason: "platform-admin-tenant-context-rbac-eval")
+            : null;
+
         var roleQuery = db.UserRoles.AsNoTracking()
             .Where(ur => ur.UserId == userId && ur.Effect == AuthorizationEffect.Allow);
 
@@ -482,32 +486,38 @@ public sealed class AccessControlService(
             // Fall through to authoritative database evaluation if cache is transiently unavailable
         }
 
-        var roleQuery = db.UserRoles.AsNoTracking()
-            .Include(ur => ur.Role!)
-            .ThenInclude(r => r.RolePermissions)
-            .ThenInclude(rp => rp.Permission)
-            .Where(ur => ur.UserId == userId);
+        List<UserRole> assignments;
+        using (isPlatformScope && tenantId.HasValue
+            ? tenantContext.BeginScope(tenantId, platformBypass: true, bypassReason: "platform-admin-tenant-context-rbac-eval")
+            : null)
+        {
+            var roleQuery = db.UserRoles.AsNoTracking()
+                .Include(ur => ur.Role!)
+                .ThenInclude(r => r.RolePermissions)
+                .ThenInclude(rp => rp.Permission)
+                .Where(ur => ur.UserId == userId);
 
-        if (isPlatformScope && !tenantId.HasValue)
-        {
-            roleQuery = roleQuery.Where(ur => ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform);
-        }
-        else if (isPlatformScope && tenantId.HasValue)
-        {
-            roleQuery = roleQuery.Where(ur =>
-                (ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform) ||
-                (ur.TenantId == tenantId.Value && ur.Role!.Scope == RoleScopeType.Tenant));
-        }
-        else if (tenantId.HasValue)
-        {
-            roleQuery = roleQuery.Where(ur => ur.TenantId == tenantId.Value && ur.Role!.Scope == RoleScopeType.Tenant);
-        }
-        else
-        {
-            return [];
-        }
+            if (isPlatformScope && !tenantId.HasValue)
+            {
+                roleQuery = roleQuery.Where(ur => ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform);
+            }
+            else if (isPlatformScope && tenantId.HasValue)
+            {
+                roleQuery = roleQuery.Where(ur =>
+                    (ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform) ||
+                    (ur.TenantId == tenantId.Value && ur.Role!.Scope == RoleScopeType.Tenant));
+            }
+            else if (tenantId.HasValue)
+            {
+                roleQuery = roleQuery.Where(ur => ur.TenantId == tenantId.Value && ur.Role!.Scope == RoleScopeType.Tenant);
+            }
+            else
+            {
+                return [];
+            }
 
-        var assignments = await roleQuery.ToListAsync(ct);
+            assignments = await roleQuery.ToListAsync(ct);
+        }
 
         var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var explicitlyDenied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -576,32 +586,38 @@ public sealed class AccessControlService(
             return new AuthorizationDecision(false, "PLATFORM_SCOPE_REQUIRED");
         }
 
-        var query = db.UserRoles.AsNoTracking()
-            .Include(ur => ur.Role!)
-            .ThenInclude(r => r.RolePermissions)
-            .ThenInclude(rp => rp.Permission)
-            .Where(ur => ur.UserId == request.UserId);
+        List<UserRole> assignments;
+        using (request.IsPlatformScope && request.TenantId.HasValue
+            ? tenantContext.BeginScope(request.TenantId, platformBypass: true, bypassReason: "platform-admin-tenant-context-rbac-eval")
+            : null)
+        {
+            var query = db.UserRoles.AsNoTracking()
+                .Include(ur => ur.Role!)
+                .ThenInclude(r => r.RolePermissions)
+                .ThenInclude(rp => rp.Permission)
+                .Where(ur => ur.UserId == request.UserId);
 
-        if (request.IsPlatformScope && !request.TenantId.HasValue)
-        {
-            query = query.Where(ur => ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform);
-        }
-        else if (request.IsPlatformScope && request.TenantId.HasValue)
-        {
-            query = query.Where(ur =>
-                (ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform) ||
-                (ur.TenantId == request.TenantId.Value && ur.Role!.Scope == RoleScopeType.Tenant));
-        }
-        else if (request.TenantId.HasValue)
-        {
-            query = query.Where(ur => ur.TenantId == request.TenantId.Value && ur.Role!.Scope == RoleScopeType.Tenant);
-        }
-        else
-        {
-            return new AuthorizationDecision(false, "SECURITY_CONTEXT_MISSING");
-        }
+            if (request.IsPlatformScope && !request.TenantId.HasValue)
+            {
+                query = query.Where(ur => ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform);
+            }
+            else if (request.IsPlatformScope && request.TenantId.HasValue)
+            {
+                query = query.Where(ur =>
+                    (ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform) ||
+                    (ur.TenantId == request.TenantId.Value && ur.Role!.Scope == RoleScopeType.Tenant));
+            }
+            else if (request.TenantId.HasValue)
+            {
+                query = query.Where(ur => ur.TenantId == request.TenantId.Value && ur.Role!.Scope == RoleScopeType.Tenant);
+            }
+            else
+            {
+                return new AuthorizationDecision(false, "SECURITY_CONTEXT_MISSING");
+            }
 
-        var assignments = await query.ToListAsync(ct);
+            assignments = await query.ToListAsync(ct);
+        }
 
         // Enforce strict Application-Scope Isolation:
         // An application-bound role (e.g., NEXUS_F) MUST NEVER authorize operations in another application (e.g., NEXUS_M).
