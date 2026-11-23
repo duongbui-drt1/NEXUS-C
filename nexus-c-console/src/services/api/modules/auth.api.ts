@@ -22,7 +22,7 @@ export const authApi = {
   effectivePermissions: (signal?: AbortSignal) =>
     apiRequest<EffectivePermissionsResponse>('/api/v1/auth/permissions', { signal }),
 
-  switchTenant: (tenantId: string) =>
+  switchTenant: (tenantId: string | null) =>
     apiRequest<AuthTokenResponse>('/api/v1/auth/switch-tenant', {
       method: 'POST',
       body: { tenantId },

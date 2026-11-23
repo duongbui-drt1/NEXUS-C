@@ -24,7 +24,7 @@ export interface AuthState {
   accessibleTenants: TenantDto[];
   login: (req: LoginRequest) => Promise<AuthTokenResponse>;
   logout: () => Promise<void>;
-  switchTenant: (tenantId: string) => Promise<void>;
+  switchTenant: (tenantId: string | null) => Promise<void>;
   reloadPermissions: () => Promise<void>;
   hasPermission: (permission: string) => boolean;
 }
@@ -35,6 +35,7 @@ async function fetchMetadataSnapshot(): Promise<{
   tenants: TenantDto[];
   roles: string[];
   permissions: string[];
+  isPlatformUser: boolean;
   status: 'loaded' | 'failed';
 }> {
   const [permRes, tenantsRes] = await Promise.allSettled([
@@ -50,6 +51,7 @@ async function fetchMetadataSnapshot(): Promise<{
       tenants,
       roles: Array.isArray(permRes.value.roles) ? permRes.value.roles : [],
       permissions: Array.isArray(permRes.value.permissions) ? permRes.value.permissions : [],
+      isPlatformUser: Boolean(permRes.value.isPlatformUser),
       status: 'loaded',
     };
   }
@@ -59,6 +61,7 @@ async function fetchMetadataSnapshot(): Promise<{
     tenants,
     roles: [],
     permissions: [],
+    isPlatformUser: false,
     status: 'failed',
   };
 }
@@ -72,6 +75,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
   const [permissions, setPermissions] = useState<string[]>([]);
   const [roles, setRoles] = useState<string[]>([]);
+  const [serverIsPlatformUser, setServerIsPlatformUser] = useState(false);
   const [accessibleTenants, setAccessibleTenants] = useState<TenantDto[]>([]);
 
   const resetAuthContext = useCallback(() => {
@@ -79,6 +83,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setPermissionStatus('idle');
     setPermissions([]);
     setRoles([]);
+    setServerIsPlatformUser(false);
     setAccessibleTenants([]);
     queryClient.clear();
   }, [queryClient]);
@@ -98,6 +103,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAccessibleTenants(snap.tenants);
     setRoles(snap.roles);
     setPermissions(snap.permissions);
+    setServerIsPlatformUser(snap.isPlatformUser);
     setPermissionStatus(snap.status);
   }, []);
 
@@ -110,6 +116,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setAccessibleTenants(snap.tenants);
       setRoles(snap.roles);
       setPermissions(snap.permissions);
+      setServerIsPlatformUser(snap.isPlatformUser);
       setPermissionStatus(snap.status);
     });
     return () => {
@@ -147,10 +154,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [resetAuthContext]);
 
   const switchTenant = useCallback(
-    async (tenantId: string) => {
+    async (tenantId: string | null) => {
       setIsLoading(true);
       try {
-        const resp = await authApi.switchTenant(tenantId);
+        const resp = await authApi.switchTenant(tenantId || null);
         tokenStore.setFromAuthResponse(resp);
         setSession(tokenStore.getSession());
         queryClient.clear();
@@ -188,7 +195,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       tenantId: session?.tenantId ?? null,
       scope: session?.scope ?? null,
       sessionId: session?.sessionId ?? null,
-      isPlatformUser: session?.scope === 'platform',
+      isPlatformUser: serverIsPlatformUser || session?.scope === 'platform',
       permissions,
       roles,
       accessibleTenants,
@@ -198,7 +205,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       reloadPermissions: hydrateUserMetadata,
       hasPermission,
     }),
-    [session, isLoading, permissionStatus, permissions, roles, accessibleTenants, login, logout, switchTenant, hydrateUserMetadata, hasPermission],
+    [session, isLoading, permissionStatus, serverIsPlatformUser, permissions, roles, accessibleTenants, login, logout, switchTenant, hydrateUserMetadata, hasPermission],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

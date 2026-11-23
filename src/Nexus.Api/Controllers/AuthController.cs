@@ -186,7 +186,7 @@ public sealed class AuthController(
         }
 
         var effectiveTenantId = tenantContext.TenantId ?? currentUser.TenantId;
-        var isPlatformScope = currentUser.IsPlatformUser && !effectiveTenantId.HasValue;
+        var isPlatformScope = currentUser.IsPlatformUser;
 
         var roles = await permissionEvaluator.GetRoleNamesAsync(currentUser.UserId.Value, effectiveTenantId, isPlatformScope, ct);
         var permissions = await permissionEvaluator.GetPermissionsAsync(currentUser.UserId.Value, effectiveTenantId, isPlatformScope, ct);
@@ -195,7 +195,7 @@ public sealed class AuthController(
         {
             UserId = currentUser.UserId.Value,
             TenantId = effectiveTenantId,
-            Scope = isPlatformScope ? "platform" : "tenant",
+            Scope = effectiveTenantId.HasValue ? "tenant" : "platform",
             IsPlatformUser = currentUser.IsPlatformUser,
             Roles = roles,
             Permissions = permissions
@@ -242,7 +242,7 @@ public sealed class AuthController(
         }
 
         var effectiveTenantId = tenantContext.TenantId ?? currentUser.TenantId;
-        var isPlatformScope = currentUser.IsPlatformUser && !effectiveTenantId.HasValue;
+        var isPlatformScope = currentUser.IsPlatformUser;
 
         var effectiveAppCode = !string.IsNullOrWhiteSpace(request.ApplicationCode)
             ? request.ApplicationCode.Trim()

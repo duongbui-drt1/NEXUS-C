@@ -145,6 +145,16 @@ export default function TenantsPage() {
       header: 'Thao tác',
       render: (t) => (
         <div style={{ display: 'flex', gap: 6 }}>
+          {t.status === 'Active' && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={auth.tenantId === t.id}
+              onClick={() => void auth.switchTenant(t.id)}
+            >
+              {auth.tenantId === t.id ? 'Đang chọn' : 'Chọn ngữ cảnh'}
+            </button>
+          )}
           {canUpdate && (
             <button
               type="button"

@@ -226,7 +226,27 @@ export default function IntegrationsPage() {
 
       {tab === 'connections' && (
         !auth.tenantId ? (
-          <div className="alert alert-info">Kết nối tích hợp thuộc phạm vi Tenant. Hãy chọn một Tenant ở thanh tiêu đề trên cùng.</div>
+          <div className="alert alert-info" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+            <span>Kết nối tích hợp thuộc phạm vi Tenant. Chọn ngay một Tenant có sẵn để quản lý kết nối:</span>
+            {auth.accessibleTenants.length > 0 && (
+              <select
+                className="select"
+                style={{ width: 'auto', minWidth: 240 }}
+                aria-label="Chọn nhanh Tenant cho Kết nối"
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) void auth.switchTenant(e.target.value);
+                }}
+              >
+                <option value="">-- Chọn Tenant có sẵn --</option>
+                {auth.accessibleTenants.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    🏢 {t.code} — {t.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         ) : (
           <div className="grid-2">
             <DataTable
@@ -394,7 +414,27 @@ export default function IntegrationsPage() {
 
       {tab === 'ai-governance' && (
         !auth.tenantId ? (
-          <div className="alert alert-info">Chính sách AI Governance thuộc phạm vi Tenant (FORCE RLS). Hãy chọn một Tenant ở thanh tiêu đề.</div>
+          <div className="alert alert-info" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+            <span>Chính sách AI Governance thuộc phạm vi Tenant (FORCE RLS). Chọn ngay một Tenant có sẵn:</span>
+            {auth.accessibleTenants.length > 0 && (
+              <select
+                className="select"
+                style={{ width: 'auto', minWidth: 240 }}
+                aria-label="Chọn nhanh Tenant cho AI Governance"
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) void auth.switchTenant(e.target.value);
+                }}
+              >
+                <option value="">-- Chọn Tenant có sẵn --</option>
+                {auth.accessibleTenants.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    🏢 {t.code} — {t.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         ) : (
           <div className="grid-2">
             <DataTable

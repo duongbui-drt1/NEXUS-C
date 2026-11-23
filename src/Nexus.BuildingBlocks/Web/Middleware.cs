@@ -354,7 +354,7 @@ public sealed class TenantContextMiddleware(RequestDelegate next, ILogger<Tenant
                 currentUser.TenantId.Value,
                 context.RequestAborted);
 
-            if (access is null || !access.IsActiveMember)
+            if (access is null || (!currentUser.IsPlatformUser && !access.IsActiveMember))
             {
                 await WriteProblemAsync(context, Error.Forbidden(
                     "TENANT_MEMBERSHIP_REQUIRED",

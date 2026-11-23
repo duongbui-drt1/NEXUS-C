@@ -436,6 +436,12 @@ public sealed class AccessControlService(
         {
             roleQuery = roleQuery.Where(ur => ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform);
         }
+        else if (isPlatformScope && tenantId.HasValue)
+        {
+            roleQuery = roleQuery.Where(ur =>
+                (ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform) ||
+                (ur.TenantId == tenantId.Value && ur.Role!.Scope == RoleScopeType.Tenant));
+        }
         else if (tenantId.HasValue)
         {
             roleQuery = roleQuery.Where(ur => ur.TenantId == tenantId.Value && ur.Role!.Scope == RoleScopeType.Tenant);
@@ -485,6 +491,12 @@ public sealed class AccessControlService(
         if (isPlatformScope && !tenantId.HasValue)
         {
             roleQuery = roleQuery.Where(ur => ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform);
+        }
+        else if (isPlatformScope && tenantId.HasValue)
+        {
+            roleQuery = roleQuery.Where(ur =>
+                (ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform) ||
+                (ur.TenantId == tenantId.Value && ur.Role!.Scope == RoleScopeType.Tenant));
         }
         else if (tenantId.HasValue)
         {
@@ -573,6 +585,12 @@ public sealed class AccessControlService(
         if (request.IsPlatformScope && !request.TenantId.HasValue)
         {
             query = query.Where(ur => ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform);
+        }
+        else if (request.IsPlatformScope && request.TenantId.HasValue)
+        {
+            query = query.Where(ur =>
+                (ur.TenantId == null && ur.Role!.Scope == RoleScopeType.Platform) ||
+                (ur.TenantId == request.TenantId.Value && ur.Role!.Scope == RoleScopeType.Tenant));
         }
         else if (request.TenantId.HasValue)
         {

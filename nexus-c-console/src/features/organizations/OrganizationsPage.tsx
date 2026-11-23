@@ -108,8 +108,26 @@ export default function OrganizationsPage() {
       />
 
       {!hasTenant ? (
-        <div className="alert alert-info">
-          Dữ liệu Tổ chức thuộc phạm vi Tenant (RLS). Hãy chọn một Tenant ở thanh tiêu đề trên cùng (hoặc đăng nhập vào Tenant) để quản lý pháp nhân và chi nhánh.
+        <div className="alert alert-info" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+          <span>Dữ liệu Tổ chức thuộc phạm vi Tenant (RLS). Chọn ngay một Tenant có sẵn để quản lý pháp nhân và chi nhánh:</span>
+          {auth.accessibleTenants.length > 0 && (
+            <select
+              className="select"
+              style={{ width: 'auto', minWidth: 240 }}
+              aria-label="Chọn nhanh Tenant cho Tổ chức"
+              value=""
+              onChange={(e) => {
+                if (e.target.value) void auth.switchTenant(e.target.value);
+              }}
+            >
+              <option value="">-- Chọn Tenant có sẵn --</option>
+              {auth.accessibleTenants.map((t) => (
+                <option key={t.id} value={t.id}>
+                  🏢 {t.code} — {t.name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
       ) : (
         <>

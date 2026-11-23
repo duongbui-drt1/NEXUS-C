@@ -904,8 +904,26 @@ export default function ApiManagementPage() {
             </div>
             <div className="panel-body">
               {!auth.tenantId ? (
-                <div className="alert alert-info">
-                  Webhooks thuộc phạm vi Tenant (<span className="mono">platform.integrations.manage</span>). Hãy chọn một Tenant ở thanh tiêu đề.
+                <div className="alert alert-info" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                  <span>Webhooks thuộc phạm vi Tenant (<span className="mono">platform.integrations.manage</span>). Chọn ngay một Tenant có sẵn:</span>
+                  {auth.accessibleTenants.length > 0 && (
+                    <select
+                      className="select"
+                      style={{ width: 'auto', minWidth: 220 }}
+                      aria-label="Chọn nhanh Tenant cho Webhooks"
+                      value=""
+                      onChange={(e) => {
+                        if (e.target.value) void auth.switchTenant(e.target.value);
+                      }}
+                    >
+                      <option value="">-- Chọn Tenant có sẵn --</option>
+                      {auth.accessibleTenants.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          🏢 {t.code} — {t.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
               ) : (
                 <>

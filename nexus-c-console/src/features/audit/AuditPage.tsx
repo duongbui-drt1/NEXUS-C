@@ -104,18 +104,23 @@ export default function AuditPage() {
               }}
             />
             {auth.isPlatformUser && (
-              <input
-                type="search"
-                className="input mono"
-                style={{ maxWidth: 240 }}
-                placeholder="Lọc Tenant UUID (Platform Admin)"
+              <select
+                className="select"
+                style={{ maxWidth: 260 }}
                 aria-label="Lọc theo Tenant ID"
                 value={tenantFilter}
                 onChange={(e) => {
                   setTenantFilter(e.target.value);
                   setPage(1);
                 }}
-              />
+              >
+                <option value="">Tất cả Tenants (Platform & Tenant)</option>
+                {auth.accessibleTenants.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.code} — {t.name}
+                  </option>
+                ))}
+              </select>
             )}
           </>
         }

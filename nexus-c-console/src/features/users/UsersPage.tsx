@@ -26,6 +26,7 @@ export default function UsersPage() {
   const [fullName, setFullName] = useState('');
   const [roleName, setRoleName] = useState('Employee');
   const [isPlatformUser, setIsPlatformUser] = useState(false);
+  const [createTenantId, setCreateTenantId] = useState('');
 
   const [disableTarget, setDisableTarget] = useState<UserDto | null>(null);
   const [disableReason, setDisableReason] = useState('');
@@ -63,10 +64,10 @@ export default function UsersPage() {
       setProfFirstName(d.firstName ?? '');
       setProfLastName(d.lastName ?? '');
       setProfPhone(d.phoneNumber ?? '');
-      setProfJobTitle(d.jobTitle ?? '');
+      setProfJobTitle(d.jobTitle ?? d.displayName ?? '');
       setProfCountry(d.countryCode ?? '');
       setProfTimeZone(d.timeZone ?? '');
-      setProfLocale(d.locale ?? '');
+      setProfLocale(d.preferredLocale ?? d.locale ?? '');
       setProfNotes(d.adminNotes ?? '');
       return d;
     },
@@ -79,7 +80,10 @@ export default function UsersPage() {
         email: email.trim(),
         password,
         fullName: fullName.trim(),
-        tenantId: auth.tenantId,
+        tenantId:
+          auth.isPlatformUser && isPlatformUser
+            ? null
+            : createTenantId || auth.tenantId || auth.accessibleTenants[0]?.id || null,
         roleName: roleName.trim() || undefined,
         isPlatformUser: auth.isPlatformUser && isPlatformUser,
       }),
@@ -100,11 +104,11 @@ export default function UsersPage() {
         fullName: profFullName.trim() || undefined,
         firstName: profFirstName.trim() || null,
         lastName: profLastName.trim() || null,
+        displayName: profJobTitle.trim() || null,
         phoneNumber: profPhone.trim() || null,
-        jobTitle: profJobTitle.trim() || null,
         countryCode: profCountry || null,
         timeZone: profTimeZone || null,
-        locale: profLocale || null,
+        preferredLocale: profLocale || null,
         adminNotes: profNotes.trim() || null,
       }),
     onSuccess: () => {
@@ -285,12 +289,16 @@ export default function UsersPage() {
         ) : detailQuery.data ? (
           <>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-              <Badge variant="neutral">ID: {detailQuery.data.id.slice(0, 8)}…</Badge>
-              <Badge variant={detailQuery.data.clerkSubject ? 'success' : 'neutral'}>
-                Clerk: {detailQuery.data.clerkSubject ?? 'Chưa liên kết'}
+              <Badge variant="neutral">ID: {(detailQuery.data.id ?? '').slice(0, 8)}…</Badge>
+              <Badge variant={detailQuery.data.clerkSubjectId || detailQuery.data.clerkSubject ? 'success' : 'neutral'}>
+                Clerk: {detailQuery.data.clerkSubjectId ?? detailQuery.data.clerkSubject ?? 'Chưa liên kết'}
               </Badge>
-              <Badge variant="info">Sessions: {detailQuery.data.activeSessionCount}</Badge>
-              <Badge variant="neutral">Tenants: {detailQuery.data.tenantMemberships.length}</Badge>
+              <Badge variant="info">
+                Sessions: {detailQuery.data.activeSessions?.length ?? detailQuery.data.activeSessionCount ?? 0}
+              </Badge>
+              <Badge variant="neutral">
+                Tenants: {detailQuery.data.tenantIds?.length ?? detailQuery.data.tenantMemberships?.length ?? 0}
+              </Badge>
             </div>
             <div className="alert alert-info" style={{ marginBottom: 12, fontSize: 12 }}>
               Biểu mẫu hồ sơ chỉ cập nhật thông tin phi đặc quyền. Phân quyền (RBAC) và tư cách Tenant được quản lý tách biệt tại Access Control.
@@ -373,10 +381,29 @@ export default function UsersPage() {
           </select>
         </div>
         {auth.isPlatformUser && (
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-            <input type="checkbox" checked={isPlatformUser} onChange={(e) => setIsPlatformUser(e.target.checked)} />
-            Tài khoản quản trị cấp Platform
-          </label>
+          <>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 10 }}>
+              <input type="checkbox" checked={isPlatformUser} onChange={(e) => setIsPlatformUser(e.target.checked)} />
+              Tài khoản quản trị cấp Platform
+            </label>
+            {!isPlatformUser && auth.accessibleTenants.length > 0 && (
+              <div className="form-field">
+                <label className="form-label" htmlFor="u-tenant">Gán vào Tenant có sẵn</label>
+                <select
+                  id="u-tenant"
+                  className="select"
+                  value={createTenantId || auth.tenantId || auth.accessibleTenants[0]?.id || ''}
+                  onChange={(e) => setCreateTenantId(e.target.value)}
+                >
+                  {auth.accessibleTenants.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.code} — {t.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </>
         )}
       </Dialog>
 

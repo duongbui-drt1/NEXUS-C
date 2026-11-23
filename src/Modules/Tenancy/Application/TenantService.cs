@@ -444,6 +444,17 @@ public sealed class TenantService(
     public async Task<Result<IReadOnlyList<TenantDto>>> ListAccessibleTenantsAsync(Guid userId, CancellationToken ct = default)
     {
         using var scope = tenantContext.BeginScope(null, platformBypass: true, bypassReason: "list-accessible-tenants");
+
+        if (currentUser.IsPlatformUser)
+        {
+            var allTenants = await db.Tenants.AsNoTracking()
+                .Where(t => t.Status != TenantLifecycleStatus.Archived)
+                .OrderBy(t => t.Code)
+                .Select(t => Map(t))
+                .ToListAsync(ct);
+            return allTenants;
+        }
+
         var tenantIds = await db.Memberships.AsNoTracking()
             .Where(m => m.UserId == userId && m.Status == MembershipStatus.Active)
             .Select(m => m.TenantId)

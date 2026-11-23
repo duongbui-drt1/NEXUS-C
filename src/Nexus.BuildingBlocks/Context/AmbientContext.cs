@@ -111,7 +111,9 @@ public sealed class HttpCurrentUser(IHttpContextAccessor httpContextAccessor) : 
 
     public string? Scope => Principal?.FindFirstValue("scope");
 
-    public bool IsPlatformUser => string.Equals(Scope, "platform", StringComparison.OrdinalIgnoreCase);
+    public bool IsPlatformUser =>
+        string.Equals(Scope, "platform", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(Principal?.FindFirstValue("is_platform_user"), "true", StringComparison.OrdinalIgnoreCase);
 
     public bool IsServicePrincipal => string.Equals(Scope, "service", StringComparison.OrdinalIgnoreCase);
 

@@ -108,8 +108,9 @@ export default function SubscriptionsPage() {
     mutationFn: () => {
       const now = new Date();
       const ends = new Date(now.getTime() + Number(days) * 86_400_000);
+      const effectiveTenantId = targetTenantId.trim() || auth.tenantId || auth.accessibleTenants[0]?.id || '';
       return subscriptionsApi.assignPlan({
-        tenantId: targetTenantId.trim(),
+        tenantId: effectiveTenantId,
         planId: targetPlanId,
         startsAt: now.toISOString(),
         endsAt: ends.toISOString(),
@@ -308,8 +309,20 @@ export default function SubscriptionsPage() {
         }
       >
         <div className="form-field">
-          <label className="form-label" htmlFor="as-tid">Tenant UUID</label>
-          <input id="as-tid" className="input mono" value={targetTenantId} onChange={(e) => setTargetTenantId(e.target.value)} />
+          <label className="form-label" htmlFor="as-tid">Chọn Tenant có sẵn</label>
+          <select
+            id="as-tid"
+            className="select"
+            value={targetTenantId || auth.tenantId || auth.accessibleTenants[0]?.id || ''}
+            onChange={(e) => setTargetTenantId(e.target.value)}
+          >
+            {auth.accessibleTenants.length === 0 && <option value="">-- Chưa có Tenant nào --</option>}
+            {auth.accessibleTenants.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.code} — {t.name} ({t.status})
+              </option>
+            ))}
+          </select>
         </div>
         <div className="form-field">
           <label className="form-label" htmlFor="as-pid">Chọn gói SaaS (chỉ gói đang hoạt động)</label>

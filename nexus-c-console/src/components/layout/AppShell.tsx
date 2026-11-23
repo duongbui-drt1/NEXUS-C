@@ -97,13 +97,13 @@ export function AppShell() {
   }, [quickSearch, visibleNav]);
 
   const handleTenantSwitch = async (targetTenantId: string) => {
-    if (!targetTenantId || targetTenantId === auth.tenantId) return;
+    const normalized = targetTenantId.trim() || null;
+    if (normalized === (auth.tenantId ?? null)) return;
     try {
-      await auth.switchTenant(targetTenantId);
-      notify('Đã chuyển ngữ cảnh tenant thành công.', 'success');
-      navigate('/overview');
+      await auth.switchTenant(normalized);
+      notify(normalized ? 'Đã chuyển ngữ cảnh Tenant thành công.' : 'Đã chuyển về ngữ cảnh Platform (Global).', 'success');
     } catch {
-      notify('Không thể chuyển tenant. Kiểm tra quyền membership.', 'danger');
+      notify('Không thể chuyển ngữ cảnh Tenant.', 'danger');
     }
   };
 
@@ -198,25 +198,28 @@ export function AppShell() {
           </div>
 
           <div className="header-right">
-            <Badge variant={auth.isPlatformUser ? 'info' : 'neutral'}>
-              {auth.isPlatformUser ? 'Platform Scope' : 'Tenant Scope'}
+            <Badge variant={auth.tenantId ? 'success' : auth.isPlatformUser ? 'info' : 'neutral'}>
+              {auth.tenantId ? 'Tenant Active' : auth.isPlatformUser ? 'Platform Scope' : 'Tenant Scope'}
             </Badge>
 
-            {auth.accessibleTenants.length > 0 && (
-              <select
-                className="select"
-                style={{ width: 'auto', minWidth: 160 }}
-                aria-label="Chọn ngữ cảnh tenant"
-                value={auth.tenantId ?? ''}
-                onChange={(e) => void handleTenantSwitch(e.target.value)}
-              >
-                {auth.isPlatformUser && <option value="">Platform (Global)</option>}
-                {auth.accessibleTenants.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.code} — {t.name}
-                  </option>
-                ))}
-              </select>
+            {(auth.isPlatformUser || auth.accessibleTenants.length > 0) && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Building2 size={15} style={{ color: 'var(--color-text-muted)' }} />
+                <select
+                  className="select"
+                  style={{ width: 'auto', minWidth: 200, fontWeight: 500 }}
+                  aria-label="Chọn ngữ cảnh tenant"
+                  value={auth.tenantId ?? ''}
+                  onChange={(e) => void handleTenantSwitch(e.target.value)}
+                >
+                  {auth.isPlatformUser && <option value="">🌐 Platform (Global — Chọn Tenant...)</option>}
+                  {auth.accessibleTenants.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      🏢 {t.code} — {t.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
             )}
 
             <button

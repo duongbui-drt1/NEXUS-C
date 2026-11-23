@@ -30,7 +30,7 @@ public sealed class JwtOptions
 
 public sealed record LoginRequest(string Email, string Password, Guid? TenantId = null);
 public sealed record RefreshRequest(string? RefreshToken = null);
-public sealed record SwitchTenantRequest(Guid TenantId);
+public sealed record SwitchTenantRequest(Guid? TenantId = null);
 public sealed record ChangePasswordRequest(string CurrentPassword, string NewPassword);
 public sealed record ResetPasswordRequest(string Email, string ResetToken, string NewPassword);
 public sealed record VerifyEmailRequest(Guid UserId, string VerificationToken);
@@ -158,7 +158,8 @@ public sealed class JwtTokenGenerator(IOptions<JwtOptions> options, ISystemClock
             new(JwtRegisteredClaimNames.Email, user.Email ?? string.Empty),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString("D")),
             new("sid", sessionId.ToString("D")),
-            new("scope", scope)
+            new("scope", scope),
+            new("is_platform_user", user.IsPlatformUser ? "true" : "false")
         };
 
         if (tenantId.HasValue)
@@ -527,26 +528,40 @@ public sealed class AuthService(
             return Error.Unauthorized("AUTH_REQUIRED", "Authentication required.");
         }
 
-        var access = await tenantValidator.ValidateMembershipAsync(currentUser.UserId.Value, request.TenantId, ct);
-        if (access is null || !access.IsActiveMember)
-        {
-            return Error.Forbidden("TENANT_MEMBERSHIP_REQUIRED", "You do not have an active membership in the target tenant.");
-        }
-
-        if (access.TenantStatus == TenantLifecycleStatus.Suspended)
-        {
-            return Error.Forbidden("TENANT_SUSPENDED", "Cannot switch into a suspended tenant.");
-        }
-
-        if (access.TenantStatus == TenantLifecycleStatus.Archived)
-        {
-            return Error.Forbidden("TENANT_ARCHIVED", "Cannot switch into an archived tenant.");
-        }
-
         var user = await userManager.FindByIdAsync(currentUser.UserId.Value.ToString("D"));
         if (user is null || !user.IsActive)
         {
             return Error.Unauthorized("AUTH_ACCOUNT_INACTIVE", "User account is inactive.");
+        }
+
+        Guid? targetTenantId = request.TenantId.HasValue && request.TenantId.Value != Guid.Empty
+            ? request.TenantId.Value
+            : null;
+
+        if (!targetTenantId.HasValue)
+        {
+            if (!user.IsPlatformUser)
+            {
+                return Error.Forbidden("PLATFORM_SCOPE_DENIED", "Only platform users can switch to global platform scope.");
+            }
+        }
+        else
+        {
+            var access = await tenantValidator.ValidateMembershipAsync(currentUser.UserId.Value, targetTenantId.Value, ct);
+            if (access is null || (!user.IsPlatformUser && !access.IsActiveMember))
+            {
+                return Error.Forbidden("TENANT_MEMBERSHIP_REQUIRED", "You do not have an active membership in the target tenant.");
+            }
+
+            if (access.TenantStatus == TenantLifecycleStatus.Suspended)
+            {
+                return Error.Forbidden("TENANT_SUSPENDED", "Cannot switch into a suspended tenant.");
+            }
+
+            if (access.TenantStatus == TenantLifecycleStatus.Archived)
+            {
+                return Error.Forbidden("TENANT_ARCHIVED", "Cannot switch into an archived tenant.");
+            }
         }
 
         var now = clock.UtcNow;
@@ -565,23 +580,26 @@ public sealed class AuthService(
             prior.Revoke("TenantSwitched", now);
         }
 
-        session.Touch(now, request.TenantId);
+        session.Touch(now, targetTenantId);
         var refreshLifetime = TimeSpan.FromDays(jwtOptions.Value.RefreshTokenDays);
         var newRawToken = CryptoHelper.GenerateSecureToken(64);
         var replacement = RefreshToken.Create(
-            user.Id, request.TenantId, session.Id, Guid.CreateVersion7(), CryptoHelper.Sha256Hex(newRawToken), now, refreshLifetime);
+            user.Id, targetTenantId, session.Id, Guid.CreateVersion7(), CryptoHelper.Sha256Hex(newRawToken), now, refreshLifetime);
 
         db.RefreshTokens.Add(replacement);
         await db.SaveChangesAsync(ct);
 
-        await auditWriter.WriteAsync(new AuditEntryRequest(
-            "identity.switch_tenant", "UserSession", session.Id.ToString("D"), request.TenantId, "Success",
-            AfterState: new { TargetTenantId = request.TenantId }), ct);
+        var nextScope = user.IsPlatformUser && !targetTenantId.HasValue ? "platform" : "tenant";
 
-        var (accessToken, accessExp) = tokenGenerator.GenerateAccessToken(user, session.Id, request.TenantId, "tenant");
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "identity.switch_tenant", "UserSession", session.Id.ToString("D"), targetTenantId, "Success",
+            AfterState: new { TargetTenantId = targetTenantId, Scope = nextScope },
+            IsCrossTenantPlatformAccess: user.IsPlatformUser && targetTenantId.HasValue), ct);
+
+        var (accessToken, accessExp) = tokenGenerator.GenerateAccessToken(user, session.Id, targetTenantId, nextScope);
         return new AuthTokenResponse(
             accessToken, accessExp, newRawToken, replacement.ExpiresAt,
-            user.Id, user.Email!, request.TenantId, "tenant", session.Id);
+            user.Id, user.Email!, targetTenantId, nextScope, session.Id);
     }
 
     public async Task<Result> ChangePasswordAsync(ChangePasswordRequest request, CancellationToken ct = default)
