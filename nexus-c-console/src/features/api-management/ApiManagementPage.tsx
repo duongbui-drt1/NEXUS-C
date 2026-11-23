@@ -591,7 +591,7 @@ export default function ApiManagementPage() {
             </div>
             <div className="panel-body">
               {!canManageApi ? (
-                <div className="alert alert-info">Cần quyền <span className="mono">platform.api.manage</span> để tạo hoặc xoay vòng Service Client.</div>
+                <div className="alert alert-danger" role="alert">Vui lòng liên hệ Admin để xem chi tiết</div>
               ) : (
                 <form
                   onSubmit={(e) => {
@@ -688,7 +688,7 @@ export default function ApiManagementPage() {
             </div>
             <div className="panel-body">
               {!canManageApi ? (
-                <div className="alert alert-info">Cần quyền <span className="mono">platform.api.manage</span> để tạo hoặc thu hồi API Key.</div>
+                <div className="alert alert-danger" role="alert">Vui lòng liên hệ Admin để xem chi tiết</div>
               ) : (
                 <form
                   onSubmit={(e) => {
@@ -767,7 +767,7 @@ export default function ApiManagementPage() {
             </div>
             <div className="panel-body">
               {!canManageRateLimits ? (
-                <div className="alert alert-info">Cần quyền <span className="mono">platform.rate-limits.manage</span> để chỉnh sửa chính sách Rate Limit.</div>
+                <div className="alert alert-danger" role="alert">Vui lòng liên hệ Admin để xem chi tiết</div>
               ) : (
                 <form
                   onSubmit={(e) => {
@@ -905,7 +905,7 @@ export default function ApiManagementPage() {
             <div className="panel-body">
               {!auth.tenantId ? (
                 <div className="alert alert-info" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-                  <span>Webhooks thuộc phạm vi Tenant (<span className="mono">platform.integrations.manage</span>). Chọn ngay một Tenant có sẵn:</span>
+                  <span>Webhooks thuộc phạm vi Tenant. Chọn ngay một Tenant có sẵn:</span>
                   {auth.accessibleTenants.length > 0 && (
                     <select
                       className="select"

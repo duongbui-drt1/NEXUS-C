@@ -61,14 +61,14 @@ function RequirePermission({
   if (platformOnly && !auth.isPlatformUser) {
     return (
       <div className="alert alert-danger" role="alert">
-        Chức năng này chỉ dành cho quản trị viên cấp Platform. Mọi truy cập trái phép đều bị backend từ chối (HTTP 403).
+        Vui lòng liên hệ Admin để xem chi tiết
       </div>
     );
   }
   if (permission && !auth.hasPermission(permission)) {
     return (
       <div className="alert alert-danger" role="alert">
-        Bạn không có quyền <span className="mono">{permission}</span> để truy cập khu vực này.
+        Vui lòng liên hệ Admin để xem chi tiết
       </div>
     );
   }

@@ -162,7 +162,7 @@ export default function OverviewPage() {
 
         {!auth.hasPermission('platform.audit.read') ? (
           <div className="panel-body">
-            <div className="alert alert-info">Tài khoản hiện tại không có quyền <span className="mono">platform.audit.read</span>.</div>
+            <div className="alert alert-danger" role="alert">Vui lòng liên hệ Admin để xem chi tiết</div>
           </div>
         ) : auditQuery.isLoading ? (
           <LoadingState />

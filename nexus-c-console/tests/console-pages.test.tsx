@@ -108,7 +108,7 @@ describe('NEXUS C Console — Auth, Fail-Closed RBAC, Tenants, API Management & 
     });
 
     renderAt('/api-management');
-    expect(await screen.findByText(/Bạn không có quyền/i)).toBeInTheDocument();
+    expect(await screen.findByText('Vui lòng liên hệ Admin để xem chi tiết')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'API Management' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Events & Jobs' })).not.toBeInTheDocument();
   });
@@ -272,7 +272,7 @@ describe('NEXUS C Console — Auth, Fail-Closed RBAC, Tenants, API Management & 
 
     renderAt('/core/tenants');
 
-    expect(await screen.findByText(/chỉ dành cho quản trị viên cấp Platform/i)).toBeInTheDocument();
+    expect(await screen.findByText('Vui lòng liên hệ Admin để xem chi tiết')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Tenants' })).not.toBeInTheDocument();
   });
 

@@ -371,7 +371,7 @@ export default function IntegrationsPage() {
             </div>
             <div className="panel-body">
               {!canManageEmail ? (
-                <div className="alert alert-info">Cần quyền <span className="mono">platform.email.manage</span> để gửi email trực tiếp hoặc quản lý danh sách chặn (suppressions).</div>
+                <div className="alert alert-danger" role="alert">Vui lòng liên hệ Admin để xem chi tiết</div>
               ) : (
                 <form
                   onSubmit={(e) => {
