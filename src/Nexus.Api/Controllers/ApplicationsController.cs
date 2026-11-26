@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Nexus.BuildingBlocks.Web;
+using Nexus.Modules.AccessControl.Application;
 using Nexus.Modules.Subscription.Application;
 using Nexus.SharedKernel.Context;
 using Nexus.SharedKernel.Results;
@@ -13,6 +14,7 @@ public sealed record TenantApplicationToggleRequest(Guid? TenantId = null);
 [Route("api/v1/platform")]
 public sealed class ApplicationsController(
     ISubscriptionService subscriptionService,
+    IAccessControlService accessControlService,
     ITenantContext tenantContext) : ControllerBase
 {
     [HttpGet("applications")]
@@ -44,6 +46,18 @@ public sealed class ApplicationsController(
     [RequirePermission(Permissions.ApplicationsManage)]
     public async Task<IActionResult> DeactivateForTenant(string code, [FromBody] TenantApplicationToggleRequest? request, CancellationToken ct)
         => (await subscriptionService.SetTenantApplicationActivationAsync(code, activate: false, request?.TenantId, ct)).ToActionResult(HttpContext);
+
+    /// <summary>
+    /// Idempotently registers or updates application-scoped domain permissions (e.g., NEXUS_M m.* manifest)
+    /// into NEXUS C's authoritative RBAC permission catalog (ADR-001).
+    /// </summary>
+    [HttpPost("applications/{code}/permissions/sync")]
+    [RequirePermission(Permissions.ApplicationsManage)]
+    public async Task<IActionResult> SyncApplicationPermissions(
+        string code,
+        [FromBody] SyncApplicationPermissionsRequest request,
+        CancellationToken ct)
+        => (await accessControlService.SyncApplicationPermissionsAsync(code, request, ct)).ToActionResult(HttpContext);
 
     /// <summary>
     /// Authoritative tenant entitlement evaluation endpoint for NEXUS F, E, M and Console.

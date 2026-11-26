@@ -94,6 +94,21 @@ public sealed class Permission : Entity
             Scope = scope,
             Category = category.Trim()
         };
+
+    public bool UpdateMetadata(string name, PermissionScope scope, string category)
+    {
+        var trimmedName = name.Trim();
+        var trimmedCategory = category.Trim();
+        if (Name == trimmedName && Scope == scope && Category == trimmedCategory)
+        {
+            return false;
+        }
+
+        Name = trimmedName;
+        Scope = scope;
+        Category = trimmedCategory;
+        return true;
+    }
 }
 
 public sealed class RolePermission

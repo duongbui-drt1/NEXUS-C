@@ -44,10 +44,24 @@ public sealed record UserRoleDto(
     string? ResourceScopeId,
     string Effect = "Allow");
 
+public sealed record SyncApplicationPermissionItem(
+    string Code,
+    string Name,
+    string Category,
+    string Scope = "Tenant");
+public sealed record SyncApplicationPermissionsRequest(IReadOnlyList<SyncApplicationPermissionItem> Permissions);
+public sealed record SyncApplicationPermissionsResponse(
+    string ApplicationCode,
+    int AddedCount,
+    int UpdatedCount,
+    int TotalSynced,
+    IReadOnlyList<PermissionDto> Permissions);
+
 public interface IAccessControlService
 {
     Task SeedDefaultsAsync(CancellationToken ct = default);
     Task<Result<IReadOnlyList<PermissionDto>>> ListPermissionsAsync(CancellationToken ct = default);
+    Task<Result<SyncApplicationPermissionsResponse>> SyncApplicationPermissionsAsync(string applicationCode, SyncApplicationPermissionsRequest request, CancellationToken ct = default);
     Task<Result<IReadOnlyList<RoleDto>>> ListRolesAsync(CancellationToken ct = default);
     Task<Result<RoleDto>> CreateRoleAsync(CreateRoleRequest request, CancellationToken ct = default);
     Task<Result<UserRoleDto>> AssignRoleAsync(AssignRoleRequest request, CancellationToken ct = default);
@@ -227,6 +241,116 @@ public sealed class AccessControlService(
             .ToListAsync(ct);
 
         return list;
+    }
+
+    public async Task<Result<SyncApplicationPermissionsResponse>> SyncApplicationPermissionsAsync(
+        string applicationCode,
+        SyncApplicationPermissionsRequest request,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(applicationCode))
+        {
+            return Error.Validation("APPLICATION_CODE_REQUIRED", "Application code is required.");
+        }
+
+        var normalizedApp = applicationCode.Trim().ToUpperInvariant();
+        if (normalizedApp == "NEXUS_C")
+        {
+            return Error.Forbidden("PLATFORM_PERMISSIONS_PROTECTED", "Core NEXUS_C platform permissions cannot be modified via application sync.");
+        }
+
+        if (request?.Permissions is null || request.Permissions.Count == 0)
+        {
+            return Error.Validation("PERMISSIONS_REQUIRED", "At least one permission item is required.");
+        }
+
+        if (request.Permissions.Count > 200)
+        {
+            return Error.Validation("PERMISSIONS_LIMIT_EXCEEDED", "A maximum of 200 permissions may be synced per request.");
+        }
+
+        var normalizedItems = new List<(string Code, string Name, PermissionScope Scope, string Category)>();
+        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in request.Permissions)
+        {
+            if (string.IsNullOrWhiteSpace(item.Code) || string.IsNullOrWhiteSpace(item.Name) || string.IsNullOrWhiteSpace(item.Category))
+            {
+                return Error.Validation("PERMISSION_INVALID_ITEM", "Permission code, name, and category are required.");
+            }
+
+            var code = item.Code.Trim().ToLowerInvariant();
+            if (code.StartsWith("platform.", StringComparison.OrdinalIgnoreCase))
+            {
+                return Error.Forbidden("PERMISSION_PREFIX_FORBIDDEN", $"Permission '{code}' cannot use reserved 'platform.' prefix.");
+            }
+
+            if (code.Contains('*') || !code.Contains('.') || code.Length > 100)
+            {
+                return Error.Validation("PERMISSION_INVALID_CODE", $"Permission code '{code}' must be namespaced (e.g., 'm.dashboard.read'), max 100 chars, without wildcards.");
+            }
+
+            if (!seenCodes.Add(code))
+            {
+                return Error.Validation("PERMISSION_DUPLICATE_CODE", $"Duplicate permission code '{code}' in sync manifest.");
+            }
+
+            var scope = Enum.TryParse<PermissionScope>(item.Scope, ignoreCase: true, out var parsedScope)
+                ? parsedScope
+                : PermissionScope.Tenant;
+            if (scope == PermissionScope.Platform)
+            {
+                return Error.Forbidden("PERMISSION_PLATFORM_SCOPE_FORBIDDEN", $"Application '{normalizedApp}' cannot register Platform-only permission '{code}'.");
+            }
+
+            normalizedItems.Add((code, item.Name.Trim(), scope, item.Category.Trim()));
+        }
+
+        var targetCodes = normalizedItems.Select(x => x.Code).ToList();
+        var existing = await db.Permissions
+            .Where(p => targetCodes.Contains(p.Code))
+            .ToDictionaryAsync(p => p.Code, StringComparer.OrdinalIgnoreCase, ct);
+
+        var addedCount = 0;
+        var updatedCount = 0;
+        var syncedEntities = new List<Permission>();
+
+        foreach (var (code, name, scope, category) in normalizedItems)
+        {
+            if (existing.TryGetValue(code, out var perm))
+            {
+                if (perm.UpdateMetadata(name, scope, category))
+                {
+                    updatedCount++;
+                }
+                syncedEntities.Add(perm);
+            }
+            else
+            {
+                var created = Permission.Create(code, name, scope, category);
+                db.Permissions.Add(created);
+                syncedEntities.Add(created);
+                addedCount++;
+            }
+        }
+
+        await db.SaveChangesAsync(ct);
+
+        await auditWriter.WriteAsync(new AuditEntryRequest(
+            "application.permissions.synced", "Application", normalizedApp, null, "Success",
+            AfterState: new { normalizedApp, addedCount, updatedCount, codes = targetCodes }), ct);
+
+        var resultDtos = syncedEntities
+            .OrderBy(p => p.Category).ThenBy(p => p.Code)
+            .Select(p => new PermissionDto(p.Id, p.Code, p.Name, p.Scope.ToString(), p.Category))
+            .ToList();
+
+        return new SyncApplicationPermissionsResponse(
+            normalizedApp,
+            addedCount,
+            updatedCount,
+            resultDtos.Count,
+            resultDtos);
     }
 
     public async Task<Result<IReadOnlyList<RoleDto>>> ListRolesAsync(CancellationToken ct = default)
